@@ -1,0 +1,54 @@
+name: my-cc
+version: 0.1.0.0
+synopsis: A C compiler written in Haskell
+description: >
+  This is a project to implement a C compiler in Haskell, using Nora Sandler's "Writing a C Compiler".
+author: Onur
+maintainer: 
+license: MIT
+dependencies:
+- base >= 4.7 && < 5
+- megaparsec
+- text
+- pretty
+- regex-pcre
+- directory
+- process
+- filepath
+
+
+ghc-options:
+- -Wall
+- -Wcompat
+- -Widentities
+- -Wincomplete-record-updates
+- -Wincomplete-uni-patterns
+- -Wmissing-export-lists
+- -Wmissing-home-modules
+- -Wpartial-fields
+- -Wredundant-constraints
+
+library:
+  source-dirs: src
+
+executables:
+  my-cc:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - my-cc
+
+tests:
+  my-cc-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - my-cc

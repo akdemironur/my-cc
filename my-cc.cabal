@@ -1,0 +1,75 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.36.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           my-cc
+version:        0.1.0.0
+synopsis:       A C compiler written in Haskell
+description:    This is a project to implement a C compiler in Haskell, using Nora Sandler's "Writing a C Compiler".
+author:         Onur
+license:        MIT
+license-file:   LICENSE
+build-type:     Simple
+
+library
+  exposed-modules:
+      AST
+      Codegen
+      Lexer
+      Parser
+  other-modules:
+      Paths_my_cc
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      base >=4.7 && <5
+    , directory
+    , filepath
+    , megaparsec
+    , pretty
+    , process
+    , regex-pcre
+    , text
+  default-language: Haskell2010
+
+executable my-cc
+  main-is: Main.hs
+  other-modules:
+      Paths_my_cc
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , directory
+    , filepath
+    , megaparsec
+    , my-cc
+    , pretty
+    , process
+    , regex-pcre
+    , text
+  default-language: Haskell2010
+
+test-suite my-cc-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_my_cc
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , directory
+    , filepath
+    , megaparsec
+    , my-cc
+    , pretty
+    , process
+    , regex-pcre
+    , text
+  default-language: Haskell2010
