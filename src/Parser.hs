@@ -4,16 +4,7 @@
 module Parser where
 
 import AST
-  ( Expression (..),
-    Function (..),
-    Identifier (..),
-    IntLiteral (..),
-    Parameter (..),
-    Program (..),
-    Statement (..),
-    Type (..),
-  )
-import Lexer (Token (..))
+import Lexer
 
 class Parseable a where
   parse :: [Token] -> (a, [Token])
@@ -35,7 +26,13 @@ instance Parseable Statement where
 instance Parseable Expression where
   parse :: [Token] -> (Expression, [Token])
   parse (TConstant c : ts) = (ConstantExpression (IntLiteral c), ts)
-  parse _ = error "Invalid expression"
+  parse (TOpenParen : ts) =
+    let (expression, ts') = parse ts
+     in (expression, expectAndConsume [TCloseParen] ts')
+  parse ts =
+    let (operator, ts') = parse ts
+        (expression, ts'') = parse ts'
+     in (Unary operator expression, ts'')
 
 instance Parseable Identifier where
   parse :: [Token] -> (Identifier, [Token])
@@ -74,6 +71,12 @@ instance Parseable Parameter where
     let (t, ts') = parse ts
         (Identifier name, ts'') = parse ts'
      in (Parameter t name, ts'')
+
+instance Parseable UnaryOperator where
+  parse :: [Token] -> (UnaryOperator, [Token])
+  parse (TTilde : ts) = (Complement, ts)
+  parse (THyphen : ts) = (Negate, ts)
+  parse _ = error "Invalid unary operator"
 
 parseProgram :: [Token] -> Program
 parseProgram = fst . parse

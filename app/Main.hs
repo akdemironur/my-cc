@@ -11,15 +11,22 @@ import System.Directory (removeFile)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.FilePath (dropExtension, replaceExtension)
+import System.Info (arch)
 import System.Process (callCommand)
+import Tacky
 
 preprocess :: FilePath -> IO String
 preprocess inputFile = do
   let preprocessedFile = replaceExtension inputFile "i"
-  callCommand $ "gcc -E -P " ++ inputFile ++ " -o " ++ preprocessedFile
+  callCommand $ gcc ++ "-E -P " ++ inputFile ++ " -o " ++ preprocessedFile
   contents <- readFile preprocessedFile
   removeFile preprocessedFile
   return contents
+
+gcc :: String
+gcc = case arch of
+  "aarch64" -> "arch -x86_64 gcc "
+  _ -> "gcc "
 
 main :: IO ()
 main = do
@@ -27,17 +34,18 @@ main = do
   case args of
     ["--lex", inputFile] -> preprocess inputFile >>= print . lexer
     ["--parse", inputFile] -> preprocess inputFile >>= print . parseProgram . lexer
-    ["--codegen", inputFile] -> preprocess inputFile >>= print . codegenProg . parseProgram . lexer
+    ["--codegen", inputFile] -> preprocess inputFile >>= print . toAsm . codegen . toTACProg . parseProgram . lexer
+    ["--tacky", inputFile] -> preprocess inputFile >>= print . toTACProg . parseProgram . lexer
     ["-S", inputFile] -> compileToAssembly inputFile
     [inputFile] -> compileAndLink inputFile
     _ -> do
-      putStrLn "Usage: my-cc [--lex|--parse|--codegen|-S] <input_file>"
+      putStrLn "Usage: my-cc [--lex|--parse|--codegen|--tacky|-S] <input_file>"
       exitWith (ExitFailure 1)
 
 compileAndLink :: FilePath -> IO ()
 compileAndLink inputFile = do
   compileToAssembly inputFile
-  callCommand $ "arch -x86_64 gcc " ++ assemblyFile ++ " -o " ++ outputFile
+  callCommand $ gcc ++ assemblyFile ++ " -o " ++ outputFile
   removeFile assemblyFile
   where
     assemblyFile :: FilePath
@@ -47,7 +55,7 @@ compileAndLink inputFile = do
 
 compileToAssembly :: FilePath -> IO ()
 compileToAssembly inputFile = do
-  assemblyContent <- preprocess inputFile <&> (toAsm . codegenProg . parseProgram . lexer)
+  assemblyContent <- preprocess inputFile <&> (toAsm . codegen . toTACProg . parseProgram . lexer)
   assemblyContent `seq` writeFile assemblyFile assemblyContent
   where
     assemblyFile :: FilePath

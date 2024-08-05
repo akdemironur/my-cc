@@ -19,6 +19,7 @@ library
       Codegen
       Lexer
       Parser
+      Tacky
   other-modules:
       Paths_my_cc
   hs-source-dirs:
@@ -26,9 +27,11 @@ library
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
       base >=4.7 && <5
+    , containers
     , directory
     , filepath
     , megaparsec
+    , mtl
     , pretty
     , process
     , regex-pcre
@@ -44,9 +47,11 @@ executable my-cc
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers
     , directory
     , filepath
     , megaparsec
+    , mtl
     , my-cc
     , pretty
     , process
@@ -64,9 +69,11 @@ test-suite my-cc-test
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers
     , directory
     , filepath
     , megaparsec
+    , mtl
     , my-cc
     , pretty
     , process
