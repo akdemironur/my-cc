@@ -5,7 +5,7 @@ module Main where
 import AST ()
 import Codegen
 import Data.Functor ((<&>))
-import Lexer (lexer)
+import Lexer (lex)
 import Parser (parseProgram)
 import System.Directory (removeFile)
 import System.Environment (getArgs)
@@ -14,6 +14,7 @@ import System.FilePath (dropExtension, replaceExtension)
 import System.Info (arch)
 import System.Process (callCommand)
 import Tacky
+import Prelude hiding (lex)
 
 preprocess :: FilePath -> IO String
 preprocess inputFile = do
@@ -32,10 +33,10 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["--lex", inputFile] -> preprocess inputFile >>= print . lexer
-    ["--parse", inputFile] -> preprocess inputFile >>= print . parseProgram . lexer
-    ["--codegen", inputFile] -> preprocess inputFile >>= print . toAsm . codegen . toTACProg . parseProgram . lexer
-    ["--tacky", inputFile] -> preprocess inputFile >>= print . toTACProg . parseProgram . lexer
+    ["--lex", inputFile] -> preprocess inputFile >>= print . lex
+    ["--parse", inputFile] -> preprocess inputFile >>= print . parseProgram . lex
+    ["--codegen", inputFile] -> preprocess inputFile >>= print . codeEmission . codegen . toTACProg . parseProgram . lex
+    ["--tacky", inputFile] -> preprocess inputFile >>= print . toTACProg . parseProgram . lex
     ["-S", inputFile] -> compileToAssembly inputFile
     [inputFile] -> compileAndLink inputFile
     _ -> do
@@ -55,7 +56,7 @@ compileAndLink inputFile = do
 
 compileToAssembly :: FilePath -> IO ()
 compileToAssembly inputFile = do
-  assemblyContent <- preprocess inputFile <&> (toAsm . codegen . toTACProg . parseProgram . lexer)
+  assemblyContent <- preprocess inputFile <&> (codeEmission . codegen . toTACProg . parseProgram . lex)
   assemblyContent `seq` writeFile assemblyFile assemblyContent
   where
     assemblyFile :: FilePath

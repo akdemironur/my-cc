@@ -8,9 +8,12 @@ import Lexer
 
 data Program = Program [Function] deriving (Eq)
 
-data Function = Function Type String [Parameter] [Statement] deriving (Eq)
+data Function = Function String [Statement] deriving (Eq)
 
-data Type = IntType | VoidType deriving (Eq)
+data Type
+  = IntType
+  | VoidType
+  deriving (Eq)
 
 data Parameter = Parameter Type String deriving (Eq)
 
@@ -20,9 +23,26 @@ data Identifier = Identifier String deriving (Eq)
 
 data Statement = ReturnStatement Expression deriving (Eq)
 
-data Expression = ConstantExpression IntLiteral | Unary UnaryOperator Expression deriving (Eq)
+data Expression
+  = ConstantExpression IntLiteral
+  | Unary UnaryOperator Expression
+  | Binary BinaryOperator Expression Expression
+  deriving (Eq)
 
 data UnaryOperator = Complement | Negate deriving (Eq)
+
+data BinaryOperator
+  = Add
+  | Subtract
+  | Multiply
+  | Divide
+  | Remainder
+  | BitwiseAnd
+  | BitwiseOr
+  | BitwiseXor
+  | LeftShift
+  | RightShift
+  deriving (Eq)
 
 instance Show Program where
   show :: Program -> String
@@ -30,7 +50,7 @@ instance Show Program where
 
 instance Show Function where
   show :: Function -> String
-  show (Function _ name _ statements) =
+  show (Function name statements) =
     "Function(\n"
       ++ "  name: "
       ++ show name
@@ -73,11 +93,36 @@ instance Show Expression where
   show :: Expression -> String
   show (ConstantExpression i) = "Constant(" ++ show i ++ ")"
   show (Unary op e) = "Unary(\n" ++ "  operator: " ++ show op ++ ",\n" ++ "  expression: " ++ indent (show e) ++ ")"
+  show (Binary op e1 e2) =
+    "Binary(\n"
+      ++ "  operator: "
+      ++ show op
+      ++ ",\n"
+      ++ "  left: "
+      ++ indent (show e1)
+      ++ ",\n"
+      ++ "  right: "
+      ++ indent (show e2)
+      ++ "\n"
+      ++ ")"
 
 instance Show UnaryOperator where
   show :: UnaryOperator -> String
   show Complement = "~"
   show Negate = "-"
+
+instance Show BinaryOperator where
+  show :: BinaryOperator -> String
+  show Add = "+"
+  show Subtract = "-"
+  show Multiply = "*"
+  show Divide = "/"
+  show Remainder = "%"
+  show BitwiseAnd = "&"
+  show BitwiseOr = "|"
+  show BitwiseXor = "^"
+  show LeftShift = "<<"
+  show RightShift = ">>"
 
 indent :: String -> String
 indent = unlines . map ("  " ++) . lines

@@ -14,74 +14,124 @@ data TACProgram = TACProgram [TACFunction] deriving (Show, Eq)
 
 data TACFunction = TACFunction String [TACInstruction] deriving (Show, Eq)
 
-data TACInstruction = TACReturn TACVal | TACUnary TACUnaryOp TACVal TACVal deriving (Eq)
+data TACInstruction
+  = TACReturn TACVal
+  | TACUnary TACUnaryOp TACVal TACVal
+  | TACBinary TACBinaryOp TACVal TACVal TACVal
+  deriving (Eq)
 
 instance Show TACInstruction where
   show :: TACInstruction -> String
   show (TACReturn val) = "Return(" ++ show val ++ ")"
   show (TACUnary op src dst) = "Unary(" ++ show op ++ ", " ++ show src ++ ", " ++ show dst ++ ")"
+  show (TACBinary op src1 src2 dst) = "Binary(" ++ show op ++ ", " ++ show src1 ++ ", " ++ show src2 ++ ", " ++ show dst ++ ")"
 
-data TACVal = TACConstant Int | TACVar String deriving (Eq)
+data TACVal
+  = TACConstant Int
+  | TACVar String
+  deriving (Eq)
 
 instance Show TACVal where
   show :: TACVal -> String
   show (TACConstant i) = "Constant(" ++ show i ++ ")"
   show (TACVar name) = "Var(" ++ name ++ ")"
 
-data TACUnaryOp = TACComplement | TACNegate deriving (Eq)
+data TACUnaryOp
+  = TACComplement
+  | TACNegate
+  deriving (Eq)
 
 instance Show TACUnaryOp where
   show :: TACUnaryOp -> String
   show TACComplement = "Complement"
   show TACNegate = "Negate"
 
-type NameGenerator = State Int
+data TACBinaryOp
+  = TACAdd
+  | TACSubtract
+  | TACMultiply
+  | TACDivide
+  | TACRemainder
+  | TACBitwiseAnd
+  | TACBitwiseOr
+  | TACBitwiseXor
+  | TACLeftShift
+  | TACRightShift
+  deriving (Eq)
 
-class Emittable a where
-  emitTacky :: a -> [TACInstruction] -> NameGenerator [TACInstruction]
+instance Show TACBinaryOp where
+  show :: TACBinaryOp -> String
+  show TACAdd = "Add"
+  show TACSubtract = "Subtract"
+  show TACMultiply = "Multiply"
+  show TACDivide = "Divide"
+  show TACRemainder = "Remainder"
+  show TACBitwiseAnd = "BitwiseAnd"
+  show TACBitwiseOr = "BitwiseOr"
+  show TACBitwiseXor = "BitwiseXor"
+  show TACLeftShift = "LeftShift"
+  show TACRightShift = "RightShift"
 
 tackyOp :: UnaryOperator -> TACUnaryOp
 tackyOp Complement = TACComplement
 tackyOp Negate = TACNegate
 
-nameIncrement :: String -> NameGenerator String
+tackyBinOp :: BinaryOperator -> TACBinaryOp
+tackyBinOp Add = TACAdd
+tackyBinOp Subtract = TACSubtract
+tackyBinOp Multiply = TACMultiply
+tackyBinOp Divide = TACDivide
+tackyBinOp Remainder = TACRemainder
+tackyBinOp BitwiseAnd = TACBitwiseAnd
+tackyBinOp BitwiseOr = TACBitwiseOr
+tackyBinOp BitwiseXor = TACBitwiseXor
+tackyBinOp LeftShift = TACLeftShift
+tackyBinOp RightShift = TACRightShift
+
+type InstrSt = State (Int, [TACInstruction])
+
+class Emittable a where
+  emitTacky :: a -> InstrSt TACVal
+
+nameIncrement :: String -> InstrSt String
 nameIncrement prefix = do
-  num <- get
-  put (num + 1)
+  (num, instr) <- get
+  put (num + 1, instr)
   return $ prefix ++ "." ++ show num
 
 instance Emittable Expression where
-  emitTacky :: Expression -> [TACInstruction] -> NameGenerator [TACInstruction]
-  emitTacky (Unary op (ConstantExpression (IntLiteral i))) instr = do
-    let src_val = TACConstant i
+  emitTacky :: Expression -> InstrSt TACVal
+  emitTacky (ConstantExpression (IntLiteral i)) = return $ TACConstant i
+  emitTacky (Unary op e) = do
+    src <- emitTacky e
     dst_name <- nameIncrement "tmp"
-    return $ instr ++ [TACUnary (tackyOp op) src_val (TACVar dst_name)]
-  emitTacky (Unary op e) instr = do
-    src <- emitTacky e instr
-    let src_val = case last src of
-          TACReturn val -> val
-          TACUnary _ _ val -> val
+    (num, instr) <- get
+    put (num, instr ++ [TACUnary (tackyOp op) src (TACVar dst_name)])
+    return $ TACVar dst_name
+  emitTacky (Binary op left right) = do
+    left_val <- emitTacky left
+    right_val <- emitTacky right
     dst_name <- nameIncrement "tmp"
-    return $ src ++ [TACUnary (tackyOp op) src_val (TACVar dst_name)]
-  emitTacky _ _ = error "Not emittable"
+    (num, instr) <- get
+    put (num, instr ++ [TACBinary (tackyBinOp op) left_val right_val (TACVar dst_name)])
+    return $ TACVar dst_name
 
 instance Emittable Statement where
-  emitTacky :: Statement -> [TACInstruction] -> NameGenerator [TACInstruction]
-  emitTacky (ReturnStatement (ConstantExpression (IntLiteral i))) _ = return [TACReturn (TACConstant i)]
-  emitTacky (ReturnStatement e) instr = do
-    newinstrs <- emitTacky e instr
-    let src_val = case last newinstrs of
-          TACReturn val -> val
-          TACUnary _ _ val -> val
-    return $ newinstrs ++ [TACReturn src_val]
+  emitTacky :: Statement -> InstrSt TACVal
+  emitTacky (ReturnStatement e) = do
+    src <- emitTacky e
+    (num, instr) <- get
+    put (num, instr ++ [TACReturn src])
+    return src
 
-emitTackyList :: (Emittable a) => [a] -> [TACInstruction] -> NameGenerator [TACInstruction]
-emitTackyList xs instr = foldM (flip emitTacky) instr xs
+emitTackyList :: (Emittable a) => [a] -> [TACInstruction]
+emitTackyList [] = []
+emitTackyList instrs = snd $ execState (foldM (\_ instr -> emitTacky instr) (TACConstant 0) instrs) (0, [])
 
 toTACFunc :: Function -> TACFunction
-toTACFunc (Function _ name _ body) = TACFunction name instrs
+toTACFunc (Function name body) = TACFunction name instrs
   where
-    instrs = evalState (emitTackyList body []) 0
+    instrs = emitTackyList body
 
 toTACProg :: Program -> TACProgram
 toTACProg (Program functions) = TACProgram (map toTACFunc functions)

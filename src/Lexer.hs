@@ -6,6 +6,7 @@ import Data.Char (isSpace)
 import Data.List (intercalate)
 import Data.Maybe (mapMaybe)
 import Text.Regex.PCRE ((=~))
+import Prelude hiding (lex)
 
 data Token
   = TIdentifier String
@@ -18,6 +19,15 @@ data Token
   | TTilde
   | THyphen
   | TTwoHyphens
+  | TPlus
+  | TAsterisk
+  | TSlash
+  | TPercent
+  | TBitwiseAnd
+  | TBitwiseOr
+  | TBitwiseXor
+  | TLeftShift
+  | TRightShift
   | TIntKeyword
   | TVoidKeyword
   | TReturnKeyword
@@ -31,6 +41,37 @@ identifierRegex = "\\A(?!(" ++ intercalate "|" keywords ++ ")\\b)[a-zA-Z_]\\w*\\
 
 type TokenRegex = (String, String -> Token)
 
+isBinOp :: Token -> Bool
+isBinOp TPlus = True
+isBinOp THyphen = True
+isBinOp TAsterisk = True
+isBinOp TSlash = True
+isBinOp TPercent = True
+isBinOp TBitwiseAnd = True
+isBinOp TBitwiseOr = True
+isBinOp TBitwiseXor = True
+isBinOp TLeftShift = True
+isBinOp TRightShift = True
+isBinOp _ = False
+
+isUnOp :: Token -> Bool
+isUnOp TTilde = True
+isUnOp THyphen = True
+isUnOp _ = False
+
+precedence :: Token -> Int
+precedence TPercent = 50
+precedence TSlash = 50
+precedence TAsterisk = 50
+precedence THyphen = 45
+precedence TPlus = 45
+precedence TLeftShift = 40
+precedence TRightShift = 40
+precedence TBitwiseAnd = 35
+precedence TBitwiseXor = 30
+precedence TBitwiseOr = 25
+precedence _ = 0
+
 tokenRegexes :: [TokenRegex]
 tokenRegexes =
   [ (identifierRegex, TIdentifier),
@@ -40,12 +81,21 @@ tokenRegexes =
     ("\\A~", const TTilde),
     ("\\A--", const TTwoHyphens),
     ("\\A-(?!-)", const THyphen),
+    ("\\A\\+", const TPlus),
+    ("\\A\\*", const TAsterisk),
+    ("\\A/", const TSlash),
+    ("\\A%", const TPercent),
     ("\\A[0-9]+\\b", TConstant . read),
     ("\\A\\(", const TOpenParen),
     ("\\A\\)", const TCloseParen),
     ("\\A{", const TOpenBrace),
     ("\\A}", const TCloseBrace),
-    ("\\A;", const TSemicolon)
+    ("\\A;", const TSemicolon),
+    ("\\A&(?!&)", const TBitwiseAnd),
+    ("\\A\\|(?!\\|)", const TBitwiseOr),
+    ("\\A\\^(?!\\^)", const TBitwiseXor),
+    ("\\A<<", const TLeftShift),
+    ("\\A>>", const TRightShift)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)
@@ -55,12 +105,12 @@ matchRegex input (regex, makeToken) =
       | not (null match) -> Just (makeToken match, rest)
     _ -> Nothing
 
-lexer :: String -> [Token]
-lexer "" = []
-lexer input'
+lex :: String -> [Token]
+lex "" = []
+lex input'
   | null input = []
   | null matches = error $ "No match found for input: " ++ input'
-  | otherwise = (fst . head $ matches) : lexer (snd . head $ matches)
+  | otherwise = (fst . head $ matches) : lex (snd . head $ matches)
   where
     input = dropWhile isSpace input'
     matches = mapMaybe (matchRegex input) tokenRegexes

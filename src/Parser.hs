@@ -25,14 +25,34 @@ instance Parseable Statement where
 
 instance Parseable Expression where
   parse :: [Token] -> (Expression, [Token])
-  parse (TConstant c : ts) = (ConstantExpression (IntLiteral c), ts)
-  parse (TOpenParen : ts) =
-    let (expression, ts') = parse ts
-     in (expression, expectAndConsume [TCloseParen] ts')
-  parse ts =
-    let (operator, ts') = parse ts
-        (expression, ts'') = parse ts'
-     in (Unary operator expression, ts'')
+  parse ts = parseExprHelper leftExpr ts' 0
+    where
+      (leftExpr, ts') = parseFactor ts
+
+parseExpr :: [Token] -> Int -> (Expression, [Token])
+parseExpr ts = parseExprHelper leftExpr ts'
+  where
+    (leftExpr, ts') = parseFactor ts
+
+parseExprHelper :: Expression -> [Token] -> Int -> (Expression, [Token])
+parseExprHelper leftExpr [] _ = (leftExpr, [])
+parseExprHelper leftExpr ts@(t : _) minPrec
+  | isBinOp t && precedence t >= minPrec = parseExprHelper leftExpr' ts'' minPrec
+  | otherwise = (leftExpr, ts)
+  where
+    (operator, ts') = parse ts
+    (rightExpr, ts'') = parseExpr ts' (precedence t + 1)
+    leftExpr' = Binary operator leftExpr rightExpr
+
+parseFactor :: [Token] -> (Expression, [Token])
+parseFactor (TConstant c : ts) = (ConstantExpression (IntLiteral c), ts)
+parseFactor (TOpenParen : ts) =
+  let (expression, ts') = parse ts
+   in (expression, expectAndConsume [TCloseParen] ts')
+parseFactor ts =
+  let (operator, ts') = parse ts
+      (expression, ts'') = parseFactor ts'
+   in (Unary operator expression, ts'')
 
 instance Parseable Identifier where
   parse :: [Token] -> (Identifier, [Token])
@@ -53,11 +73,11 @@ instance Parseable Type where
 instance Parseable Function where
   parse :: [Token] -> (Function, [Token])
   parse ts =
-    let (t, ts') = parse ts
+    let ts' = expectAndConsume [TIntKeyword] ts
         (Identifier name, ts'') = parse ts'
         ts''' = expectAndConsume [TOpenParen, TVoidKeyword, TCloseParen, TOpenBrace] ts''
         (statement, ts'''') = parse ts'''
-     in (Function t name [] [statement], expectAndConsume [TCloseBrace] ts'''')
+     in (Function name [statement], expectAndConsume [TCloseBrace] ts'''')
 
 instance Parseable Program where
   parse :: [Token] -> (Program, [Token])
@@ -71,6 +91,20 @@ instance Parseable Parameter where
     let (t, ts') = parse ts
         (Identifier name, ts'') = parse ts'
      in (Parameter t name, ts'')
+
+instance Parseable BinaryOperator where
+  parse :: [Token] -> (BinaryOperator, [Token])
+  parse (TPlus : ts) = (Add, ts)
+  parse (THyphen : ts) = (Subtract, ts)
+  parse (TAsterisk : ts) = (Multiply, ts)
+  parse (TSlash : ts) = (Divide, ts)
+  parse (TPercent : ts) = (Remainder, ts)
+  parse (TBitwiseAnd : ts) = (BitwiseAnd, ts)
+  parse (TBitwiseOr : ts) = (BitwiseOr, ts)
+  parse (TBitwiseXor : ts) = (BitwiseXor, ts)
+  parse (TLeftShift : ts) = (LeftShift, ts)
+  parse (TRightShift : ts) = (RightShift, ts)
+  parse _ = error "Invalid binary operator"
 
 instance Parseable UnaryOperator where
   parse :: [Token] -> (UnaryOperator, [Token])
