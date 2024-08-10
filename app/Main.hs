@@ -35,7 +35,7 @@ main = do
   case args of
     ["--lex", inputFile] -> preprocess inputFile >>= print . lex
     ["--parse", inputFile] -> preprocess inputFile >>= print . parseProgram . lex
-    ["--codegen", inputFile] -> preprocess inputFile >>= print . codeEmission . codegen . toTACProg . parseProgram . lex
+    ["--codegen", inputFile] -> preprocess inputFile >>= print . codegen . toTACProg . parseProgram . lex
     ["--tacky", inputFile] -> preprocess inputFile >>= print . toTACProg . parseProgram . lex
     ["-S", inputFile] -> compileToAssembly inputFile
     [inputFile] -> compileAndLink inputFile

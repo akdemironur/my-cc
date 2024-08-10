@@ -10,14 +10,21 @@ import AST
 import Control.Monad.State
 import GHC.IO.Handle.Types (Handle__ (Handle__))
 
+type TACIdentifier = String
+
 data TACProgram = TACProgram [TACFunction] deriving (Show, Eq)
 
-data TACFunction = TACFunction String [TACInstruction] deriving (Show, Eq)
+data TACFunction = TACFunction TACIdentifier [TACInstruction] deriving (Show, Eq)
 
 data TACInstruction
   = TACReturn TACVal
   | TACUnary TACUnaryOp TACVal TACVal
   | TACBinary TACBinaryOp TACVal TACVal TACVal
+  | TACCopy TACVal TACVal
+  | TACJump TACIdentifier
+  | TACJumpIfZero TACVal TACIdentifier
+  | TACJumpIfNotZero TACVal TACIdentifier
+  | TACLabel TACIdentifier
   deriving (Eq)
 
 instance Show TACInstruction where
@@ -25,6 +32,11 @@ instance Show TACInstruction where
   show (TACReturn val) = "Return(" ++ show val ++ ")"
   show (TACUnary op src dst) = "Unary(" ++ show op ++ ", " ++ show src ++ ", " ++ show dst ++ ")"
   show (TACBinary op src1 src2 dst) = "Binary(" ++ show op ++ ", " ++ show src1 ++ ", " ++ show src2 ++ ", " ++ show dst ++ ")"
+  show (TACCopy src dst) = "Copy(" ++ show src ++ ", " ++ show dst ++ ")"
+  show (TACJump label) = "Jump(" ++ label ++ ")"
+  show (TACJumpIfZero val label) = "JumpIfZero(" ++ show val ++ ", " ++ label ++ ")"
+  show (TACJumpIfNotZero val label) = "JumpIfNotZero(" ++ show val ++ ", " ++ label ++ ")"
+  show (TACLabel label) = "Label(" ++ label ++ ")"
 
 data TACVal
   = TACConstant Int
@@ -39,12 +51,14 @@ instance Show TACVal where
 data TACUnaryOp
   = TACComplement
   | TACNegate
+  | TACNot
   deriving (Eq)
 
 instance Show TACUnaryOp where
   show :: TACUnaryOp -> String
   show TACComplement = "Complement"
   show TACNegate = "Negate"
+  show TACNot = "Not"
 
 data TACBinaryOp
   = TACAdd
@@ -57,6 +71,12 @@ data TACBinaryOp
   | TACBitwiseXor
   | TACLeftShift
   | TACRightShift
+  | TACEqual
+  | TACNotEqual
+  | TACLessThan
+  | TACLessThanOrEqual
+  | TACGreaterThan
+  | TACGreaterThanOrEqual
   deriving (Eq)
 
 instance Show TACBinaryOp where
@@ -71,10 +91,17 @@ instance Show TACBinaryOp where
   show TACBitwiseXor = "BitwiseXor"
   show TACLeftShift = "LeftShift"
   show TACRightShift = "RightShift"
+  show TACEqual = "Equal"
+  show TACNotEqual = "NotEqual"
+  show TACLessThan = "LessThan"
+  show TACLessThanOrEqual = "LessThanOrEqual"
+  show TACGreaterThan = "GreaterThan"
+  show TACGreaterThanOrEqual = "GreaterThanOrEqual"
 
 tackyOp :: UnaryOperator -> TACUnaryOp
 tackyOp Complement = TACComplement
 tackyOp Negate = TACNegate
+tackyOp Not = TACNot
 
 tackyBinOp :: BinaryOperator -> TACBinaryOp
 tackyBinOp Add = TACAdd
@@ -87,6 +114,13 @@ tackyBinOp BitwiseOr = TACBitwiseOr
 tackyBinOp BitwiseXor = TACBitwiseXor
 tackyBinOp LeftShift = TACLeftShift
 tackyBinOp RightShift = TACRightShift
+tackyBinOp EqualTo = TACEqual
+tackyBinOp NotEqualTo = TACNotEqual
+tackyBinOp LessThan = TACLessThan
+tackyBinOp LessThanOrEqualTo = TACLessThanOrEqual
+tackyBinOp GreaterThan = TACGreaterThan
+tackyBinOp GreaterThanOrEqualTo = TACGreaterThanOrEqual
+tackyBinOp _ = error "Tackybinop shouldnt happen"
 
 type InstrSt = State (Int, [TACInstruction])
 
@@ -97,14 +131,56 @@ nameIncrement :: String -> InstrSt String
 nameIncrement prefix = do
   (num, instr) <- get
   put (num + 1, instr)
-  return $ prefix ++ "." ++ show num
+  return $ prefix ++ show num
 
 instance Emittable Expression where
   emitTacky :: Expression -> InstrSt TACVal
   emitTacky (ConstantExpression (IntLiteral i)) = return $ TACConstant i
+  emitTacky (Binary And left right) = do
+    false_label <- nameIncrement "false"
+    end_label <- nameIncrement "end"
+    result <- nameIncrement "result."
+    v1 <- emitTacky left
+    (num, instr) <- get
+    put (num, instr ++ [TACJumpIfZero v1 false_label])
+    v2 <- emitTacky right
+    (num', instr') <- get
+    put
+      ( num',
+        instr'
+          ++ [ TACJumpIfZero v2 false_label,
+               TACCopy (TACConstant 1) (TACVar result),
+               TACJump end_label,
+               TACLabel false_label,
+               TACCopy (TACConstant 0) (TACVar result),
+               TACLabel end_label
+             ]
+      )
+    return $ TACVar result
+  emitTacky (Binary Or left right) = do
+    true_label <- nameIncrement "true"
+    end_label <- nameIncrement "end"
+    result <- nameIncrement "result."
+    v1 <- emitTacky left
+    (num, instr) <- get
+    put (num, instr ++ [TACJumpIfNotZero v1 true_label])
+    v2 <- emitTacky right
+    (num', instr') <- get
+    put
+      ( num',
+        instr'
+          ++ [ TACJumpIfNotZero v2 true_label,
+               TACCopy (TACConstant 0) (TACVar result),
+               TACJump end_label,
+               TACLabel true_label,
+               TACCopy (TACConstant 1) (TACVar result),
+               TACLabel end_label
+             ]
+      )
+    return $ TACVar result
   emitTacky (Unary op e) = do
     src <- emitTacky e
-    dst_name <- nameIncrement "tmp"
+    dst_name <- nameIncrement "tmp."
     (num, instr) <- get
     put (num, instr ++ [TACUnary (tackyOp op) src (TACVar dst_name)])
     return $ TACVar dst_name
@@ -135,3 +211,12 @@ toTACFunc (Function name body) = TACFunction name instrs
 
 toTACProg :: Program -> TACProgram
 toTACProg (Program functions) = TACProgram (map toTACFunc functions)
+
+isRelationalOp :: TACBinaryOp -> Bool
+isRelationalOp TACEqual = True
+isRelationalOp TACNotEqual = True
+isRelationalOp TACLessThan = True
+isRelationalOp TACLessThanOrEqual = True
+isRelationalOp TACGreaterThan = True
+isRelationalOp TACGreaterThanOrEqual = True
+isRelationalOp _ = False

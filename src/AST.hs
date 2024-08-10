@@ -1,10 +1,11 @@
 {-# HLINT ignore "Use newtype instead of data" #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 module AST where
 
-import Lexer
+import Lexer ()
 
 data Program = Program [Function] deriving (Eq)
 
@@ -29,7 +30,11 @@ data Expression
   | Binary BinaryOperator Expression Expression
   deriving (Eq)
 
-data UnaryOperator = Complement | Negate deriving (Eq)
+data UnaryOperator
+  = Complement
+  | Negate
+  | Not
+  deriving (Eq)
 
 data BinaryOperator
   = Add
@@ -42,6 +47,14 @@ data BinaryOperator
   | BitwiseXor
   | LeftShift
   | RightShift
+  | And
+  | Or
+  | EqualTo
+  | NotEqualTo
+  | LessThan
+  | LessThanOrEqualTo
+  | GreaterThan
+  | GreaterThanOrEqualTo
   deriving (Eq)
 
 instance Show Program where
@@ -110,6 +123,7 @@ instance Show UnaryOperator where
   show :: UnaryOperator -> String
   show Complement = "~"
   show Negate = "-"
+  show Not = "!"
 
 instance Show BinaryOperator where
   show :: BinaryOperator -> String
@@ -123,6 +137,14 @@ instance Show BinaryOperator where
   show BitwiseXor = "^"
   show LeftShift = "<<"
   show RightShift = ">>"
+  show And = "&&"
+  show Or = "||"
+  show EqualTo = "=="
+  show NotEqualTo = "!="
+  show LessThan = "<"
+  show LessThanOrEqualTo = "<="
+  show GreaterThan = ">"
+  show GreaterThanOrEqualTo = ">="
 
 indent :: String -> String
 indent = unlines . map ("  " ++) . lines

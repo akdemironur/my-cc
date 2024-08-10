@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 module Parser where
@@ -104,12 +105,21 @@ instance Parseable BinaryOperator where
   parse (TBitwiseXor : ts) = (BitwiseXor, ts)
   parse (TLeftShift : ts) = (LeftShift, ts)
   parse (TRightShift : ts) = (RightShift, ts)
+  parse (TLogicalAnd : ts) = (And, ts)
+  parse (TLogicalOr : ts) = (Or, ts)
+  parse (TEqualTo : ts) = (EqualTo, ts)
+  parse (TNotEqualTo : ts) = (NotEqualTo, ts)
+  parse (TLessThan : ts) = (LessThan, ts)
+  parse (TLessThanOrEqualTo : ts) = (LessThanOrEqualTo, ts)
+  parse (TGreaterThan : ts) = (GreaterThan, ts)
+  parse (TGreaterThanOrEqualTo : ts) = (GreaterThanOrEqualTo, ts)
   parse _ = error "Invalid binary operator"
 
 instance Parseable UnaryOperator where
   parse :: [Token] -> (UnaryOperator, [Token])
   parse (TTilde : ts) = (Complement, ts)
   parse (THyphen : ts) = (Negate, ts)
+  parse (TExclamation : ts) = (Not, ts)
   parse _ = error "Invalid unary operator"
 
 parseProgram :: [Token] -> Program

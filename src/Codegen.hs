@@ -20,12 +20,40 @@ data AsmProgram = AsmProgram [AsmFunction] deriving (Show, Eq)
 
 data AsmFunction = AsmFunction String [AsmInstruction] deriving (Show, Eq)
 
+labelPrefix :: String
+labelPrefix = case os of
+  "darwin" -> "_L"
+  _ -> ".L"
+
+data AsmCondCode
+  = E
+  | NE
+  | L
+  | LE
+  | G
+  | GE
+  deriving (Show, Eq)
+
+instance ToAsm AsmCondCode where
+  codeEmission :: AsmCondCode -> String
+  codeEmission E = "e"
+  codeEmission NE = "ne"
+  codeEmission L = "l"
+  codeEmission LE = "le"
+  codeEmission G = "g"
+  codeEmission GE = "ge"
+
 data AsmInstruction
   = AsmMov AsmOperand AsmOperand
   | AsmUnary AsmUnaryOp AsmOperand
   | AsmBinary AsmBinaryOp AsmOperand AsmOperand
+  | AsmCmp AsmOperand AsmOperand
   | AsmIdiv AsmOperand
   | AsmCdq
+  | AsmJmp String
+  | AsmJmpCC AsmCondCode String
+  | AsmSetCC AsmCondCode AsmOperand
+  | AsmLabel String
   | AsmAllocateStack Int
   | AsmRet
   deriving (Show, Eq)
@@ -59,7 +87,6 @@ data AsmReg
   | R10
   | R11
   | CX
-  | CL
   deriving (Show, Eq)
 
 class ToAsm a where
@@ -72,7 +99,13 @@ instance ToAsm AsmReg where
   codeEmission R11 = "%r11d"
   codeEmission DX = "%edx"
   codeEmission CX = "%ecx"
-  codeEmission CL = "%cl"
+
+codeEmissionReg1 :: AsmReg -> String
+codeEmissionReg1 AX = "%al"
+codeEmissionReg1 DX = "%dl"
+codeEmissionReg1 R10 = "%r10b"
+codeEmissionReg1 R11 = "%r11b"
+codeEmissionReg1 CX = "%cl"
 
 instance ToAsm AsmUnaryOp where
   codeEmission :: AsmUnaryOp -> String
@@ -99,13 +132,21 @@ instance ToAsm AsmOperand where
 
 instance ToAsm AsmInstruction where
   codeEmission :: AsmInstruction -> String
+  codeEmission (AsmLabel label) = labelPrefix ++ label ++ ":"
   codeEmission (AsmMov src dst) = "movl " ++ codeEmission src ++ ", " ++ codeEmission dst
   codeEmission AsmRet = unlines ["movq %rbp, %rsp", "popq %rbp", "ret"]
   codeEmission (AsmUnary op operand) = codeEmission op ++ " " ++ codeEmission operand
   codeEmission (AsmAllocateStack i) = "subq $" ++ show i ++ ", %rsp"
   codeEmission AsmCdq = "cdq"
+  codeEmission (AsmBinary AsmSal (Register reg) dst) = codeEmission AsmSal ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
+  codeEmission (AsmBinary AsmSar (Register reg) dst) = codeEmission AsmSar ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
   codeEmission (AsmBinary op src dst) = codeEmission op ++ " " ++ codeEmission src ++ ", " ++ codeEmission dst
   codeEmission (AsmIdiv operand) = "idivl " ++ codeEmission operand
+  codeEmission (AsmCmp op1 op2) = "cmpl " ++ codeEmission op1 ++ ", " ++ codeEmission op2
+  codeEmission (AsmJmp label) = "jmp " ++ labelPrefix ++ label
+  codeEmission (AsmJmpCC cc label) = "j" ++ codeEmission cc ++ " " ++ labelPrefix ++ label
+  codeEmission (AsmSetCC cc (Register reg)) = "set" ++ codeEmission cc ++ " " ++ codeEmissionReg1 reg
+  codeEmission (AsmSetCC cc operand) = "set" ++ codeEmission cc ++ " " ++ codeEmission operand
 
 instance ToAsm AsmFunction where
   codeEmission :: AsmFunction -> String
@@ -134,6 +175,7 @@ codegenTVal (TACVar name) = Pseudo name
 codegenTUnaryOp :: TACUnaryOp -> AsmUnaryOp
 codegenTUnaryOp TACNegate = AsmNeg
 codegenTUnaryOp TACComplement = AsmNot
+codegenTUnaryOp TACNot = AsmNot
 
 codegenTBinaryOp :: TACBinaryOp -> AsmBinaryOp
 codegenTBinaryOp TACAdd = AsmAdd
@@ -151,6 +193,11 @@ codegenTInstruction (TACReturn val) =
   [ AsmMov (codegenTVal val) (Register AX),
     AsmRet
   ]
+codegenTInstruction (TACUnary TACNot src dst) =
+  [ AsmCmp (Imm 0) (codegenTVal src),
+    AsmMov (Imm 0) (codegenTVal dst),
+    AsmSetCC E (codegenTVal dst)
+  ]
 codegenTInstruction (TACUnary op src dst) =
   [ AsmMov (codegenTVal src) (codegenTVal dst),
     AsmUnary (codegenTUnaryOp op) (codegenTVal dst)
@@ -167,10 +214,43 @@ codegenTInstruction (TACBinary TACRemainder src1 src2 dst) =
     AsmIdiv (codegenTVal src2),
     AsmMov (Register DX) (codegenTVal dst)
   ]
-codegenTInstruction (TACBinary op src1 src2 dst) =
-  [ AsmMov (codegenTVal src1) (codegenTVal dst),
-    AsmBinary (codegenTBinaryOp op) (codegenTVal src2) (codegenTVal dst)
+codegenTInstruction b@(TACBinary op' _ _ _)
+  | isRelationalOp op' = codegenTInstructionRelational b
+  | otherwise = codegenTInstructionNonRelational b
+  where
+    codegenTInstructionNonRelational :: TACInstruction -> [AsmInstruction]
+    codegenTInstructionNonRelational (TACBinary op src1 src2 dst) =
+      [ AsmMov (codegenTVal src1) (codegenTVal dst),
+        AsmBinary (codegenTBinaryOp op) (codegenTVal src2) (codegenTVal dst)
+      ]
+    codegenTInstructionNonRelational _ = error "Not a binary operation"
+    codegenTInstructionRelational :: TACInstruction -> [AsmInstruction]
+    codegenTInstructionRelational (TACBinary op src1 src2 dst) =
+      [ AsmCmp (codegenTVal src2) (codegenTVal src1),
+        AsmMov (Imm 0) (codegenTVal dst),
+        AsmSetCC (relationalOpToCC op) (codegenTVal dst)
+      ]
+    codegenTInstructionRelational _ = error "Not a binary operation"
+codegenTInstruction (TACJump target) = [AsmJmp target]
+codegenTInstruction (TACJumpIfZero condition target) =
+  [ AsmCmp (Imm 0) (codegenTVal condition),
+    AsmJmpCC E target
   ]
+codegenTInstruction (TACJumpIfNotZero condition target) =
+  [ AsmCmp (Imm 0) (codegenTVal condition),
+    AsmJmpCC NE target
+  ]
+codegenTInstruction (TACCopy src dst) = [AsmMov (codegenTVal src) (codegenTVal dst)]
+codegenTInstruction (TACLabel label) = [AsmLabel label]
+
+relationalOpToCC :: TACBinaryOp -> AsmCondCode
+relationalOpToCC TACEqual = E
+relationalOpToCC TACNotEqual = NE
+relationalOpToCC TACLessThan = L
+relationalOpToCC TACLessThanOrEqual = LE
+relationalOpToCC TACGreaterThan = G
+relationalOpToCC TACGreaterThanOrEqual = GE
+relationalOpToCC _ = error "Not a relational operator"
 
 codegenTFunction :: TACFunction -> AsmFunction
 codegenTFunction (TACFunction name instructions) = AsmFunction name (concatMap codegenTInstruction instructions)
@@ -207,6 +287,8 @@ instance PseudeRegisterPass AsmInstruction where
     AsmUnary op operand -> applyToOne (AsmUnary op) operand
     AsmBinary op src dst -> applyToTwo (AsmBinary op) src dst
     AsmIdiv operand -> applyToOne AsmIdiv operand
+    AsmCmp op1 op2 -> applyToTwo AsmCmp op1 op2
+    AsmSetCC cc operand -> applyToOne (AsmSetCC cc) operand
     x -> return x
     where
       applyToOne constructor arg = constructor <$> pseudoRegisterPass arg
@@ -255,11 +337,19 @@ fixInstr (AsmBinary AsmMult src (Stack i)) =
   ]
 fixInstr (AsmBinary AsmSal (Stack i) dst) =
   [ AsmMov (Stack i) (Register CX),
-    AsmBinary AsmSal (Register CL) dst
+    AsmBinary AsmSal (Register CX) dst
   ]
 fixInstr (AsmBinary AsmSar (Stack i) dst) =
   [ AsmMov (Stack i) (Register CX),
-    AsmBinary AsmSar (Register CL) dst
+    AsmBinary AsmSar (Register CX) dst
+  ]
+fixInstr (AsmCmp (Stack i) (Stack j)) =
+  [ AsmMov (Stack i) (Register R10),
+    AsmCmp (Register R10) (Stack j)
+  ]
+fixInstr (AsmCmp src (Imm i)) =
+  [ AsmMov (Imm i) (Register R11),
+    AsmCmp src (Register R11)
   ]
 fixInstr instr@(AsmBinary op (Stack i) (Stack j))
   | op == AsmAdd

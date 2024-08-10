@@ -18,6 +18,7 @@ data Token
   | TSemicolon
   | TTilde
   | THyphen
+  | TExclamation
   | TTwoHyphens
   | TPlus
   | TAsterisk
@@ -28,13 +29,25 @@ data Token
   | TBitwiseXor
   | TLeftShift
   | TRightShift
+  | TLogicalAnd
+  | TLogicalOr
+  | TEqualTo
+  | TNotEqualTo
+  | TLessThan
+  | TLessThanOrEqualTo
+  | TGreaterThan
+  | TGreaterThanOrEqualTo
   | TIntKeyword
   | TVoidKeyword
   | TReturnKeyword
   deriving (Show, Eq)
 
 keywords :: [String]
-keywords = ["int", "void", "return"]
+keywords =
+  [ "int",
+    "void",
+    "return"
+  ]
 
 identifierRegex :: String
 identifierRegex = "\\A(?!(" ++ intercalate "|" keywords ++ ")\\b)[a-zA-Z_]\\w*\\b"
@@ -52,11 +65,20 @@ isBinOp TBitwiseOr = True
 isBinOp TBitwiseXor = True
 isBinOp TLeftShift = True
 isBinOp TRightShift = True
+isBinOp TLogicalAnd = True
+isBinOp TLogicalOr = True
+isBinOp TEqualTo = True
+isBinOp TNotEqualTo = True
+isBinOp TLessThan = True
+isBinOp TLessThanOrEqualTo = True
+isBinOp TGreaterThan = True
+isBinOp TGreaterThanOrEqualTo = True
 isBinOp _ = False
 
 isUnOp :: Token -> Bool
 isUnOp TTilde = True
 isUnOp THyphen = True
+isUnOp TExclamation = True
 isUnOp _ = False
 
 precedence :: Token -> Int
@@ -67,9 +89,17 @@ precedence THyphen = 45
 precedence TPlus = 45
 precedence TLeftShift = 40
 precedence TRightShift = 40
-precedence TBitwiseAnd = 35
-precedence TBitwiseXor = 30
-precedence TBitwiseOr = 25
+precedence TLessThan = 35
+precedence TLessThanOrEqualTo = 35
+precedence TGreaterThan = 35
+precedence TGreaterThanOrEqualTo = 35
+precedence TEqualTo = 30
+precedence TNotEqualTo = 30
+precedence TBitwiseAnd = 20
+precedence TBitwiseXor = 15
+precedence TBitwiseOr = 10
+precedence TLogicalAnd = 10
+precedence TLogicalOr = 5
 precedence _ = 0
 
 tokenRegexes :: [TokenRegex]
@@ -95,7 +125,16 @@ tokenRegexes =
     ("\\A\\|(?!\\|)", const TBitwiseOr),
     ("\\A\\^(?!\\^)", const TBitwiseXor),
     ("\\A<<", const TLeftShift),
-    ("\\A>>", const TRightShift)
+    ("\\A>>", const TRightShift),
+    ("\\A&&", const TLogicalAnd),
+    ("\\A\\|\\|", const TLogicalOr),
+    ("\\A==", const TEqualTo),
+    ("\\A!=", const TNotEqualTo),
+    ("\\A<=", const TLessThanOrEqualTo),
+    ("\\A<(?!(<|=))", const TLessThan),
+    ("\\A>=", const TGreaterThanOrEqualTo),
+    ("\\A>(?!(>|=))", const TGreaterThan),
+    ("\\A\\!(?!=)", const TExclamation)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)
