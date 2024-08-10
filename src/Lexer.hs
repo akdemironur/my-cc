@@ -21,6 +21,7 @@ data Token
   | TExclamation
   | TTwoHyphens
   | TPlus
+  | TTwoPlus
   | TAsterisk
   | TSlash
   | TPercent
@@ -37,6 +38,17 @@ data Token
   | TLessThanOrEqualTo
   | TGreaterThan
   | TGreaterThanOrEqualTo
+  | TAssignment
+  | TPlusAssignment
+  | THyphenAssignment
+  | TAsteriskAssignment
+  | TSlashAssignment
+  | TPercentAssignment
+  | TBitwiseAndAssignment
+  | TBitwiseOrAssignment
+  | TBitwiseXorAssignment
+  | TLeftShiftAssignment
+  | TRightShiftAssignment
   | TIntKeyword
   | TVoidKeyword
   | TReturnKeyword
@@ -75,32 +87,32 @@ isBinOp TGreaterThan = True
 isBinOp TGreaterThanOrEqualTo = True
 isBinOp _ = False
 
+isPostOp :: Token -> Bool
+isPostOp TTwoPlus = True
+isPostOp TTwoHyphens = True
+isPostOp _ = False
+
 isUnOp :: Token -> Bool
 isUnOp TTilde = True
 isUnOp THyphen = True
+isUnOp TTwoHyphens = True
+isUnOp TTwoPlus = True
 isUnOp TExclamation = True
 isUnOp _ = False
 
-precedence :: Token -> Int
-precedence TPercent = 50
-precedence TSlash = 50
-precedence TAsterisk = 50
-precedence THyphen = 45
-precedence TPlus = 45
-precedence TLeftShift = 40
-precedence TRightShift = 40
-precedence TLessThan = 35
-precedence TLessThanOrEqualTo = 35
-precedence TGreaterThan = 35
-precedence TGreaterThanOrEqualTo = 35
-precedence TEqualTo = 30
-precedence TNotEqualTo = 30
-precedence TBitwiseAnd = 20
-precedence TBitwiseXor = 15
-precedence TBitwiseOr = 10
-precedence TLogicalAnd = 10
-precedence TLogicalOr = 5
-precedence _ = 0
+isAssignmentOp :: Token -> Bool
+isAssignmentOp TAssignment = True
+isAssignmentOp TPlusAssignment = True
+isAssignmentOp THyphenAssignment = True
+isAssignmentOp TAsteriskAssignment = True
+isAssignmentOp TSlashAssignment = True
+isAssignmentOp TPercentAssignment = True
+isAssignmentOp TBitwiseAndAssignment = True
+isAssignmentOp TBitwiseOrAssignment = True
+isAssignmentOp TBitwiseXorAssignment = True
+isAssignmentOp TLeftShiftAssignment = True
+isAssignmentOp TRightShiftAssignment = True
+isAssignmentOp _ = False
 
 tokenRegexes :: [TokenRegex]
 tokenRegexes =
@@ -110,22 +122,23 @@ tokenRegexes =
     ("\\Areturn\\b", const TReturnKeyword),
     ("\\A~", const TTilde),
     ("\\A--", const TTwoHyphens),
-    ("\\A-(?!-)", const THyphen),
-    ("\\A\\+", const TPlus),
-    ("\\A\\*", const TAsterisk),
-    ("\\A/", const TSlash),
-    ("\\A%", const TPercent),
+    ("\\A\\+\\+", const TTwoPlus),
+    ("\\A-(?!(-|=))", const THyphen),
+    ("\\A\\+(?!(=|\\+))", const TPlus),
+    ("\\A\\*(?!=)", const TAsterisk),
+    ("\\A/(?!=)", const TSlash),
+    ("\\A%(?!=)", const TPercent),
     ("\\A[0-9]+\\b", TConstant . read),
     ("\\A\\(", const TOpenParen),
     ("\\A\\)", const TCloseParen),
     ("\\A{", const TOpenBrace),
     ("\\A}", const TCloseBrace),
     ("\\A;", const TSemicolon),
-    ("\\A&(?!&)", const TBitwiseAnd),
-    ("\\A\\|(?!\\|)", const TBitwiseOr),
-    ("\\A\\^(?!\\^)", const TBitwiseXor),
-    ("\\A<<", const TLeftShift),
-    ("\\A>>", const TRightShift),
+    ("\\A&(?!(&|=))", const TBitwiseAnd),
+    ("\\A\\|(?!(\\||=))", const TBitwiseOr),
+    ("\\A\\^(?!(\\^|=))", const TBitwiseXor),
+    ("\\A<<(?!=)", const TLeftShift),
+    ("\\A>>(?!=)", const TRightShift),
     ("\\A&&", const TLogicalAnd),
     ("\\A\\|\\|", const TLogicalOr),
     ("\\A==", const TEqualTo),
@@ -134,7 +147,18 @@ tokenRegexes =
     ("\\A<(?!(<|=))", const TLessThan),
     ("\\A>=", const TGreaterThanOrEqualTo),
     ("\\A>(?!(>|=))", const TGreaterThan),
-    ("\\A\\!(?!=)", const TExclamation)
+    ("\\A\\!(?!=)", const TExclamation),
+    ("\\A=(?!=)", const TAssignment),
+    ("\\A\\+=", const TPlusAssignment),
+    ("\\A-=", const THyphenAssignment),
+    ("\\A\\*=", const TAsteriskAssignment),
+    ("\\A/=", const TSlashAssignment),
+    ("\\A%=", const TPercentAssignment),
+    ("\\A&=", const TBitwiseAndAssignment),
+    ("\\A\\|=", const TBitwiseOrAssignment),
+    ("\\A\\^=", const TBitwiseXorAssignment),
+    ("\\A<<=", const TLeftShiftAssignment),
+    ("\\A>>=", const TRightShiftAssignment)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)

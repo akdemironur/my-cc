@@ -6,7 +6,7 @@ import AST ()
 import Codegen
 import Data.Functor ((<&>))
 import Lexer (lex)
-import Parser (parseProgram)
+import Parser (parseAll)
 import System.Directory (removeFile)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitWith)
@@ -14,6 +14,7 @@ import System.FilePath (dropExtension, replaceExtension)
 import System.Info (arch)
 import System.Process (callCommand)
 import Tacky
+import VarResolve
 import Prelude hiding (lex)
 
 preprocess :: FilePath -> IO String
@@ -33,10 +34,36 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["--lex", inputFile] -> preprocess inputFile >>= print . lex
-    ["--parse", inputFile] -> preprocess inputFile >>= print . parseProgram . lex
-    ["--codegen", inputFile] -> preprocess inputFile >>= print . codegen . toTACProg . parseProgram . lex
-    ["--tacky", inputFile] -> preprocess inputFile >>= print . toTACProg . parseProgram . lex
+    ["--lex", inputFile] ->
+      preprocess inputFile
+        >>= print
+          . lex
+    ["--parse", inputFile] ->
+      preprocess inputFile
+        >>= print
+          . parseAll
+          . lex
+    ["--validate", inputFile] ->
+      preprocess inputFile
+        >>= print
+          . resolveAll
+          . parseAll
+          . lex
+    ["--codegen", inputFile] ->
+      preprocess inputFile
+        >>= print
+          . codegen
+          . toTACProg
+          . resolveAll
+          . parseAll
+          . lex
+    ["--tacky", inputFile] ->
+      preprocess inputFile
+        >>= print
+          . toTACProg
+          . resolveAll
+          . parseAll
+          . lex
     ["-S", inputFile] -> compileToAssembly inputFile
     [inputFile] -> compileAndLink inputFile
     _ -> do
@@ -56,7 +83,15 @@ compileAndLink inputFile = do
 
 compileToAssembly :: FilePath -> IO ()
 compileToAssembly inputFile = do
-  assemblyContent <- preprocess inputFile <&> (codeEmission . codegen . toTACProg . parseProgram . lex)
+  assemblyContent <-
+    preprocess inputFile
+      <&> ( codeEmission
+              . codegen
+              . toTACProg
+              . resolveAll
+              . parseAll
+              . lex
+          )
   assemblyContent `seq` writeFile assemblyFile assemblyContent
   where
     assemblyFile :: FilePath

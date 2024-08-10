@@ -8,7 +8,7 @@ module Tacky where
 
 import AST
 import Control.Monad.State
-import GHC.IO.Handle.Types (Handle__ (Handle__))
+import qualified Data.Map as M
 
 type TACIdentifier = String
 
@@ -98,12 +98,22 @@ instance Show TACBinaryOp where
   show TACGreaterThan = "GreaterThan"
   show TACGreaterThanOrEqual = "GreaterThanOrEqual"
 
-tackyOp :: UnaryOperator -> TACUnaryOp
+tackyOp :: UnaryOp -> TACUnaryOp
 tackyOp Complement = TACComplement
 tackyOp Negate = TACNegate
 tackyOp Not = TACNot
+tackyOp _ = error "TackyOp: This shouldnt happen"
 
-tackyBinOp :: BinaryOperator -> TACBinaryOp
+tackyPostOp :: PostOp -> TACBinaryOp
+tackyPostOp PostIncrement = TACAdd
+tackyPostOp PostDecrement = TACSubtract
+
+tackyPreOp :: UnaryOp -> TACBinaryOp
+tackyPreOp PreIncrement = TACAdd
+tackyPreOp PreDecrement = TACSubtract
+tackyPreOp _ = error "TackyPreOp: This shouldnt happen"
+
+tackyBinOp :: BinaryOp -> TACBinaryOp
 tackyBinOp Add = TACAdd
 tackyBinOp Subtract = TACSubtract
 tackyBinOp Multiply = TACMultiply
@@ -122,24 +132,42 @@ tackyBinOp GreaterThan = TACGreaterThan
 tackyBinOp GreaterThanOrEqualTo = TACGreaterThanOrEqual
 tackyBinOp _ = error "Tackybinop shouldnt happen"
 
-type InstrSt = State (Int, [TACInstruction])
+tackyAssignOp :: AssignmentOp -> TACBinaryOp
+tackyAssignOp PlusAssign = TACAdd
+tackyAssignOp MinusAssign = TACSubtract
+tackyAssignOp MultiplyAssign = TACMultiply
+tackyAssignOp DivideAssign = TACDivide
+tackyAssignOp RemainderAssign = TACRemainder
+tackyAssignOp BitwiseAndAssign = TACBitwiseAnd
+tackyAssignOp BitwiseOrAssign = TACBitwiseOr
+tackyAssignOp BitwiseXorAssign = TACBitwiseXor
+tackyAssignOp LeftShiftAssign = TACLeftShift
+tackyAssignOp RightShiftAssign = TACRightShift
+tackyAssignOp _ = error "TackyAssignOp: This shouldnt happen"
+
+type GlobalNameMap = M.Map String Int
+
+type InstrSt = State (GlobalNameMap, [TACInstruction])
 
 class Emittable a where
   emitTacky :: a -> InstrSt TACVal
 
-nameIncrement :: String -> InstrSt String
-nameIncrement prefix = do
-  (num, instr) <- get
-  put (num + 1, instr)
-  return $ prefix ++ show num
+globalNameGenerator :: String -> InstrSt String
+globalNameGenerator prefix = do
+  (globMap, instr) <- get
+  let num = M.findWithDefault 0 prefix globMap
+  let newNum = num + 1
+  put (M.insert prefix newNum globMap, instr)
+  return $ prefix ++ show newNum
 
-instance Emittable Expression where
-  emitTacky :: Expression -> InstrSt TACVal
-  emitTacky (ConstantExpression (IntLiteral i)) = return $ TACConstant i
+instance Emittable Expr where
+  emitTacky :: Expr -> InstrSt TACVal
+  emitTacky (ConstantExpr (IntLiteral i)) = return $ TACConstant i
+  emitTacky (Var (Identifier name)) = return $ TACVar name
   emitTacky (Binary And left right) = do
-    false_label <- nameIncrement "false"
-    end_label <- nameIncrement "end"
-    result <- nameIncrement "result."
+    false_label <- globalNameGenerator "false"
+    end_label <- globalNameGenerator "end"
+    result <- globalNameGenerator "result."
     v1 <- emitTacky left
     (num, instr) <- get
     put (num, instr ++ [TACJumpIfZero v1 false_label])
@@ -158,9 +186,9 @@ instance Emittable Expression where
       )
     return $ TACVar result
   emitTacky (Binary Or left right) = do
-    true_label <- nameIncrement "true"
-    end_label <- nameIncrement "end"
-    result <- nameIncrement "result."
+    true_label <- globalNameGenerator "true"
+    end_label <- globalNameGenerator "end"
+    result <- globalNameGenerator "result."
     v1 <- emitTacky left
     (num, instr) <- get
     put (num, instr ++ [TACJumpIfNotZero v1 true_label])
@@ -178,39 +206,88 @@ instance Emittable Expression where
              ]
       )
     return $ TACVar result
-  emitTacky (Unary op e) = do
-    src <- emitTacky e
-    dst_name <- nameIncrement "tmp."
-    (num, instr) <- get
-    put (num, instr ++ [TACUnary (tackyOp op) src (TACVar dst_name)])
-    return $ TACVar dst_name
+  emitTacky (Unary op e)
+    | op == PreDecrement || op == PreIncrement = do
+        src <- emitTacky e
+        (num, instr) <- get
+        put (num, instr ++ [TACBinary (tackyPreOp op) src (TACConstant 1) src])
+        return src
+    | otherwise = do
+        src <- emitTacky e
+        dst_name <- globalNameGenerator "tmp."
+        (num, instr) <- get
+        put (num, instr ++ [TACUnary (tackyOp op) src (TACVar dst_name)])
+        return $ TACVar dst_name
   emitTacky (Binary op left right) = do
     left_val <- emitTacky left
     right_val <- emitTacky right
-    dst_name <- nameIncrement "tmp"
+    dst_name <- globalNameGenerator "tmp."
     (num, instr) <- get
     put (num, instr ++ [TACBinary (tackyBinOp op) left_val right_val (TACVar dst_name)])
     return $ TACVar dst_name
+  emitTacky (PostFix e op) = do
+    src <- emitTacky e
+    dst_name <- globalNameGenerator "tmp."
+    (num, instr) <- get
+    put (num, instr ++ [TACCopy src (TACVar dst_name), TACBinary (tackyPostOp op) src (TACConstant 1) src])
+    return $ TACVar dst_name
+  emitTacky (Assignment Assign l r) = do
+    lhs <- emitTacky l
+    rhs <- emitTacky r
+    (num, instr) <- get
+    put (num, instr ++ [TACCopy rhs lhs])
+    return lhs
+  emitTacky (Assignment op l r) = do
+    lhs <- emitTacky l
+    rhs <- emitTacky r
+    dst_name <- globalNameGenerator "tmp."
+    (num, instr) <- get
+    put (num, instr ++ [TACBinary (tackyAssignOp op) lhs rhs (TACVar dst_name), TACCopy (TACVar dst_name) lhs])
+    return lhs
 
-instance Emittable Statement where
-  emitTacky :: Statement -> InstrSt TACVal
-  emitTacky (ReturnStatement e) = do
+-- emitTacky (CompoundAssignment op v e) = do
+--   lhs <- emitTacky v
+--   rhs <- emitTacky e
+--   dst_name <- globalNameGenerator "tmp."
+--   (num, instr) <- get
+--   put (num, instr ++ [TACBinary (tackyBinOp op) lhs rhs (TACVar dst_name)])
+--   return $ TACVar dst_name
+
+instance Emittable Declaration where
+  emitTacky :: Declaration -> InstrSt TACVal
+  emitTacky (Declaration (Identifier name) (Just e)) = do
+    val <- emitTacky e
+    (num, instr) <- get
+    put (num, instr ++ [TACCopy val (TACVar name)])
+    return val
+  emitTacky (Declaration (Identifier name) Nothing) = return $ TACVar name
+
+instance Emittable Stmt where
+  emitTacky :: Stmt -> InstrSt TACVal
+  emitTacky (ReturnStmt e) = do
     src <- emitTacky e
     (num, instr) <- get
     put (num, instr ++ [TACReturn src])
     return src
+  emitTacky (ExprStmt e) = emitTacky e
+  emitTacky NullStmt = return $ TACConstant 0
+
+instance Emittable BlockItem where
+  emitTacky :: BlockItem -> InstrSt TACVal
+  emitTacky (BlockStmt stmt) = emitTacky stmt
+  emitTacky (BlockDecl decl) = emitTacky decl
 
 emitTackyList :: (Emittable a) => [a] -> [TACInstruction]
 emitTackyList [] = []
-emitTackyList instrs = snd $ execState (foldM (\_ instr -> emitTacky instr) (TACConstant 0) instrs) (0, [])
+emitTackyList instrs = snd $ execState (foldM (\_ instr -> emitTacky instr) (TACConstant 0) instrs) (M.empty, [])
 
 toTACFunc :: Function -> TACFunction
-toTACFunc (Function name body) = TACFunction name instrs
+toTACFunc (Function (Identifier name) body) = TACFunction name (instrs ++ [TACReturn (TACConstant 0)])
   where
     instrs = emitTackyList body
 
 toTACProg :: Program -> TACProgram
-toTACProg (Program functions) = TACProgram (map toTACFunc functions)
+toTACProg (Program functions) = TACProgram (fmap toTACFunc functions)
 
 isRelationalOp :: TACBinaryOp -> Bool
 isRelationalOp TACEqual = True

@@ -22,7 +22,7 @@ data AsmFunction = AsmFunction String [AsmInstruction] deriving (Show, Eq)
 
 labelPrefix :: String
 labelPrefix = case os of
-  "darwin" -> "_L"
+  "darwin" -> "_"
   _ -> ".L"
 
 data AsmCondCode
@@ -133,27 +133,27 @@ instance ToAsm AsmOperand where
 instance ToAsm AsmInstruction where
   codeEmission :: AsmInstruction -> String
   codeEmission (AsmLabel label) = labelPrefix ++ label ++ ":"
-  codeEmission (AsmMov src dst) = "movl " ++ codeEmission src ++ ", " ++ codeEmission dst
-  codeEmission AsmRet = unlines ["movq %rbp, %rsp", "popq %rbp", "ret"]
-  codeEmission (AsmUnary op operand) = codeEmission op ++ " " ++ codeEmission operand
-  codeEmission (AsmAllocateStack i) = "subq $" ++ show i ++ ", %rsp"
-  codeEmission AsmCdq = "cdq"
-  codeEmission (AsmBinary AsmSal (Register reg) dst) = codeEmission AsmSal ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
-  codeEmission (AsmBinary AsmSar (Register reg) dst) = codeEmission AsmSar ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
-  codeEmission (AsmBinary op src dst) = codeEmission op ++ " " ++ codeEmission src ++ ", " ++ codeEmission dst
-  codeEmission (AsmIdiv operand) = "idivl " ++ codeEmission operand
-  codeEmission (AsmCmp op1 op2) = "cmpl " ++ codeEmission op1 ++ ", " ++ codeEmission op2
-  codeEmission (AsmJmp label) = "jmp " ++ labelPrefix ++ label
-  codeEmission (AsmJmpCC cc label) = "j" ++ codeEmission cc ++ " " ++ labelPrefix ++ label
-  codeEmission (AsmSetCC cc (Register reg)) = "set" ++ codeEmission cc ++ " " ++ codeEmissionReg1 reg
-  codeEmission (AsmSetCC cc operand) = "set" ++ codeEmission cc ++ " " ++ codeEmission operand
+  codeEmission (AsmMov src dst) = "    " ++ "movl " ++ codeEmission src ++ ", " ++ codeEmission dst
+  codeEmission AsmRet = unlines (fmap ("    " ++) ["movq %rbp, %rsp", "popq %rbp", "ret"])
+  codeEmission (AsmUnary op operand) = "    " ++ codeEmission op ++ " " ++ codeEmission operand
+  codeEmission (AsmAllocateStack i) = "    " ++ "subq $" ++ show i ++ ", %rsp"
+  codeEmission AsmCdq = "    " ++ "cdq"
+  codeEmission (AsmBinary AsmSal (Register reg) dst) = "    " ++ codeEmission AsmSal ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
+  codeEmission (AsmBinary AsmSar (Register reg) dst) = "    " ++ codeEmission AsmSar ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
+  codeEmission (AsmBinary op src dst) = "    " ++ codeEmission op ++ " " ++ codeEmission src ++ ", " ++ codeEmission dst
+  codeEmission (AsmIdiv operand) = "    " ++ "idivl " ++ codeEmission operand
+  codeEmission (AsmCmp op1 op2) = "    " ++ "cmpl " ++ codeEmission op1 ++ ", " ++ codeEmission op2
+  codeEmission (AsmJmp label) = "    " ++ "jmp " ++ labelPrefix ++ label
+  codeEmission (AsmJmpCC cc label) = "    " ++ "j" ++ codeEmission cc ++ " " ++ labelPrefix ++ label
+  codeEmission (AsmSetCC cc (Register reg)) = "    " ++ "set" ++ codeEmission cc ++ " " ++ codeEmissionReg1 reg
+  codeEmission (AsmSetCC cc operand) = "    " ++ "set" ++ codeEmission cc ++ " " ++ codeEmission operand
 
 instance ToAsm AsmFunction where
   codeEmission :: AsmFunction -> String
   codeEmission (AsmFunction name instructions) =
     ".globl " ++ prefix ++ name ++ "\n" ++ prefix ++ name ++ ":\n" ++ preInstr ++ unlines (fmap codeEmission instructions)
     where
-      preInstr = "pushq %rbp\nmovq %rsp, %rbp\n"
+      preInstr = "    pushq %rbp\n    movq %rsp, %rbp\n"
       prefix = case os of
         "darwin" -> "_"
         _ -> ""

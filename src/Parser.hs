@@ -1,126 +1,237 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Use lambda-case" #-}
 
 module Parser where
 
 import AST
+import Control.Applicative (Alternative (empty, many), many, optional, (<|>))
+import Control.Monad (MonadPlus, mzero, void)
+import Data.Functor ((<&>))
 import Lexer
 
-class Parseable a where
-  parse :: [Token] -> (a, [Token])
+data Error t s
+  = UnexpedtedEndOfInput
+  | UnexpectedToken t
+  | CustomError s
+  | EmptyError
+  deriving (Show, Eq)
 
-expectAndConsume :: (Eq a, Show a) => [a] -> [a] -> [a]
-expectAndConsume [] xs = xs
-expectAndConsume _ [] = error "Unexpected end of input"
-expectAndConsume (e : es) (x : xs)
-  | e == x = expectAndConsume es xs
-  | otherwise = error $ "Expected " ++ show e ++ ", got " ++ show x
+newtype Parser a = Parser {runParser :: [Token] -> Either String (a, [Token])}
 
-instance Parseable Statement where
-  parse :: [Token] -> (Statement, [Token])
-  parse (TReturnKeyword : ts) =
-    let (expression, ts') = parse ts
-     in (ReturnStatement expression, expectAndConsume [TSemicolon] ts')
-  parse _ = error "Invalid statement"
+instance Functor Parser where
+  fmap :: (a -> b) -> Parser a -> Parser b
+  fmap f (Parser p) = Parser $ \tokens -> do
+    (x, rest) <- p tokens
+    return (f x, rest)
 
-instance Parseable Expression where
-  parse :: [Token] -> (Expression, [Token])
-  parse ts = parseExprHelper leftExpr ts' 0
-    where
-      (leftExpr, ts') = parseFactor ts
+instance Applicative Parser where
+  pure :: a -> Parser a
+  pure x = Parser $ \tokens -> Right (x, tokens)
+  (<*>) :: Parser (a -> b) -> Parser a -> Parser b
+  (Parser p1) <*> (Parser p2) = Parser $ \tokens -> do
+    (f, rest1) <- p1 tokens
+    (x, rest2) <- p2 rest1
+    return (f x, rest2)
 
-parseExpr :: [Token] -> Int -> (Expression, [Token])
-parseExpr ts = parseExprHelper leftExpr ts'
+instance Monad Parser where
+  return :: a -> Parser a
+  return = pure
+  (>>=) :: Parser a -> (a -> Parser b) -> Parser b
+  (Parser p) >>= f = Parser $ \tokens -> do
+    (x, rest) <- p tokens
+    runParser (f x) rest
+
+instance Alternative Parser where
+  empty :: Parser a
+  empty = Parser $ \_ -> Left "Empty parser"
+  (<|>) :: Parser a -> Parser a -> Parser a
+  (Parser p1) <|> (Parser p2) = Parser $ \tokens -> case p1 tokens of
+    Left _ -> p2 tokens
+    Right x -> Right x
+
+instance MonadPlus Parser where
+  mzero :: Parser a
+  mzero = empty
+
+satisfy :: (Token -> Bool) -> Parser Token
+satisfy p = Parser $ \tokens -> case tokens of
+  [] -> Left "Empty token list"
+  (t : ts) ->
+    if p t
+      then Right (t, ts)
+      else Left (unwords ["Unexpected: ", show t, "in", show (take 20 tokens)])
+
+parseToken :: Token -> Parser ()
+parseToken t = void (satisfy (== t))
+
+tokenToBinaryOp :: Token -> BinaryOp
+tokenToBinaryOp TPlus = Add
+tokenToBinaryOp THyphen = Subtract
+tokenToBinaryOp TAsterisk = Multiply
+tokenToBinaryOp TSlash = Divide
+tokenToBinaryOp TPercent = Remainder
+tokenToBinaryOp TBitwiseAnd = BitwiseAnd
+tokenToBinaryOp TBitwiseOr = BitwiseOr
+tokenToBinaryOp TBitwiseXor = BitwiseXor
+tokenToBinaryOp TLeftShift = LeftShift
+tokenToBinaryOp TRightShift = RightShift
+tokenToBinaryOp TLogicalAnd = And
+tokenToBinaryOp TLogicalOr = Or
+tokenToBinaryOp TEqualTo = EqualTo
+tokenToBinaryOp TNotEqualTo = NotEqualTo
+tokenToBinaryOp TLessThan = LessThan
+tokenToBinaryOp TLessThanOrEqualTo = LessThanOrEqualTo
+tokenToBinaryOp TGreaterThan = GreaterThan
+tokenToBinaryOp TGreaterThanOrEqualTo = GreaterThanOrEqualTo
+tokenToBinaryOp t = error $ "Invalid binary operator: " ++ show t
+
+tokenToAssignmentOp :: Token -> AssignmentOp
+tokenToAssignmentOp TAssignment = Assign
+tokenToAssignmentOp TPlusAssignment = PlusAssign
+tokenToAssignmentOp THyphenAssignment = MinusAssign
+tokenToAssignmentOp TAsteriskAssignment = MultiplyAssign
+tokenToAssignmentOp TSlashAssignment = DivideAssign
+tokenToAssignmentOp TPercentAssignment = RemainderAssign
+tokenToAssignmentOp TBitwiseAndAssignment = BitwiseAndAssign
+tokenToAssignmentOp TBitwiseOrAssignment = BitwiseOrAssign
+tokenToAssignmentOp TBitwiseXorAssignment = BitwiseXorAssign
+tokenToAssignmentOp TLeftShiftAssignment = LeftShiftAssign
+tokenToAssignmentOp TRightShiftAssignment = RightShiftAssign
+tokenToAssignmentOp t = error $ "Invalid assignment operator: " ++ show t
+
+parseBinaryOp :: Int -> Parser BinaryOp
+parseBinaryOp minPrec = satisfy (\t -> isBinOp t && opPrecedence (tokenToBinaryOp t) >= minPrec) <&> tokenToBinaryOp
+
+parseAssignmentOp :: Int -> Parser AssignmentOp
+parseAssignmentOp minPrec = satisfy (\t -> isAssignmentOp t && opPrecedence (tokenToAssignmentOp t) >= minPrec) <&> tokenToAssignmentOp
+
+parsePostOp :: Parser PostOp
+parsePostOp = satisfy isPostOp <&> tokenToPostOp
+
+parseUnaryOp :: Parser UnaryOp
+parseUnaryOp = satisfy isUnOp <&> tokenToUnaryOp
+
+tokenToUnaryOp :: Token -> UnaryOp
+tokenToUnaryOp TTilde = Complement
+tokenToUnaryOp THyphen = Negate
+tokenToUnaryOp TExclamation = Not
+tokenToUnaryOp TTwoPlus = PreIncrement
+tokenToUnaryOp TTwoHyphens = PreDecrement
+tokenToUnaryOp t = error $ "Invalid unary operator: " ++ show t
+
+tokenToPostOp :: Token -> PostOp
+tokenToPostOp TTwoPlus = PostIncrement
+tokenToPostOp TTwoHyphens = PostDecrement
+tokenToPostOp t = error $ "Invalid post operator: " ++ show t
+
+parseIdentifier :: Parser Identifier
+parseIdentifier = Parser $ \tokens -> case tokens of
+  (TIdentifier s : ts) -> Right (Identifier s, ts)
+  _ -> Left "Invalid identifier"
+
+parseIntLiteral :: Parser IntLiteral
+parseIntLiteral = Parser $ \tokens -> case tokens of
+  (TConstant i : ts) -> Right (IntLiteral i, ts)
+  _ -> Left "Invalid integer literal"
+
+parseType :: Parser Type
+parseType = Parser $ \tokens -> case tokens of
+  (TIntKeyword : ts) -> Right (IntType, ts)
+  (TVoidKeyword : ts) -> Right (VoidType, ts)
+  _ -> Left "Invalid type"
+
+parseParameter :: Parser Parameter
+parseParameter = Parameter <$> parseType <*> parseIdentifier
+
+parseDeclaration :: Parser Declaration
+parseDeclaration = do
+  parseToken TIntKeyword
+  name <- parseIdentifier
+  expr <- optional (parseToken TAssignment *> parseExpr)
+  parseToken TSemicolon
+  return (Declaration name expr)
+
+parseUExpr :: Parser Expr
+parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr
+
+parsePExpr :: Parser Expr
+parsePExpr = do
+  pe <- parsePrimaryExpr
+  ops <- many parsePostOp
+  case ops of
+    [] -> return pe
+    _ -> return $ foldl PostFix pe ops
+
+parsePrimaryExpr :: Parser Expr
+parsePrimaryExpr =
+  ConstantExpr <$> parseIntLiteral
+    <|> Var <$> parseIdentifier
+    <|> (parseToken TOpenParen *> parseExpr <* parseToken TCloseParen)
+
+parseExpr :: Parser Expr
+parseExpr = parseExprPrec 0
+
+parseExprPrec :: Int -> Parser Expr
+parseExprPrec minPrec = parseBAExpr minPrec <|> parseUExpr
+
+parseBAExpr :: Int -> Parser Expr
+parseBAExpr mp = do
+  l <- parseUExpr <|> parsePrimaryExpr
+  parseBAExprHelper l mp
   where
-    (leftExpr, ts') = parseFactor ts
+    parseBAExprHelper :: Expr -> Int -> Parser Expr
+    parseBAExprHelper leftExpr minPrec = do
+      next_op <-
+        B <$> parseBinaryOp minPrec
+          <|> A <$> parseAssignmentOp minPrec
+      case next_op of
+        B op -> do
+          rightExpr <- parseExprPrec (opPrecedence op + 1)
+          let newLeft = Binary op leftExpr rightExpr
+          parseBAExprHelper newLeft minPrec <|> return newLeft
+        A op -> do
+          rightExpr <- parseExprPrec (opPrecedence op)
+          let newLeft = Assignment op leftExpr rightExpr
+          parseBAExprHelper newLeft minPrec <|> return newLeft
+        _ -> empty
 
-parseExprHelper :: Expression -> [Token] -> Int -> (Expression, [Token])
-parseExprHelper leftExpr [] _ = (leftExpr, [])
-parseExprHelper leftExpr ts@(t : _) minPrec
-  | isBinOp t && precedence t >= minPrec = parseExprHelper leftExpr' ts'' minPrec
-  | otherwise = (leftExpr, ts)
-  where
-    (operator, ts') = parse ts
-    (rightExpr, ts'') = parseExpr ts' (precedence t + 1)
-    leftExpr' = Binary operator leftExpr rightExpr
+parseStmt :: Parser Stmt
+parseStmt =
+  ReturnStmt <$> (parseToken TReturnKeyword *> parseExpr <* parseToken TSemicolon)
+    <|> NullStmt <$ parseToken TSemicolon
+    <|> ExprStmt <$> (parseExpr <* parseToken TSemicolon)
 
-parseFactor :: [Token] -> (Expression, [Token])
-parseFactor (TConstant c : ts) = (ConstantExpression (IntLiteral c), ts)
-parseFactor (TOpenParen : ts) =
-  let (expression, ts') = parse ts
-   in (expression, expectAndConsume [TCloseParen] ts')
-parseFactor ts =
-  let (operator, ts') = parse ts
-      (expression, ts'') = parseFactor ts'
-   in (Unary operator expression, ts'')
+parseBlockItem :: Parser BlockItem
+parseBlockItem =
+  BlockStmt <$> parseStmt
+    <|> BlockDecl <$> parseDeclaration
 
-instance Parseable Identifier where
-  parse :: [Token] -> (Identifier, [Token])
-  parse (TIdentifier s : ts) = (Identifier s, ts)
-  parse _ = error "Invalid identifier"
+parseManyBlockItem :: Parser [BlockItem]
+parseManyBlockItem = many parseBlockItem
 
-instance Parseable IntLiteral where
-  parse :: [Token] -> (IntLiteral, [Token])
-  parse (TConstant c : ts) = (IntLiteral c, ts)
-  parse _ = error "Invalid integer literal"
+parseFunction :: Parser Function
+parseFunction = do
+  parseToken TIntKeyword
+  name <- parseIdentifier
+  parseToken TOpenParen
+  parseToken TVoidKeyword
+  parseToken TCloseParen
+  parseToken TOpenBrace
+  block <- many parseBlockItem
+  parseToken TCloseBrace
+  return (Function name block)
 
-instance Parseable Type where
-  parse :: [Token] -> (Type, [Token])
-  parse (TIntKeyword : ts) = (IntType, ts)
-  parse (TVoidKeyword : ts) = (VoidType, ts)
-  parse _ = error "Invalid type"
+parseProgram :: Parser Program
+parseProgram = do
+  function <- parseFunction
+  return (Program [function])
 
-instance Parseable Function where
-  parse :: [Token] -> (Function, [Token])
-  parse ts =
-    let ts' = expectAndConsume [TIntKeyword] ts
-        (Identifier name, ts'') = parse ts'
-        ts''' = expectAndConsume [TOpenParen, TVoidKeyword, TCloseParen, TOpenBrace] ts''
-        (statement, ts'''') = parse ts'''
-     in (Function name [statement], expectAndConsume [TCloseBrace] ts'''')
-
-instance Parseable Program where
-  parse :: [Token] -> (Program, [Token])
-  parse ts = if null ts' then (Program [function], []) else error "Invalid program"
-    where
-      (function, ts') = parse ts
-
-instance Parseable Parameter where
-  parse :: [Token] -> (Parameter, [Token])
-  parse ts =
-    let (t, ts') = parse ts
-        (Identifier name, ts'') = parse ts'
-     in (Parameter t name, ts'')
-
-instance Parseable BinaryOperator where
-  parse :: [Token] -> (BinaryOperator, [Token])
-  parse (TPlus : ts) = (Add, ts)
-  parse (THyphen : ts) = (Subtract, ts)
-  parse (TAsterisk : ts) = (Multiply, ts)
-  parse (TSlash : ts) = (Divide, ts)
-  parse (TPercent : ts) = (Remainder, ts)
-  parse (TBitwiseAnd : ts) = (BitwiseAnd, ts)
-  parse (TBitwiseOr : ts) = (BitwiseOr, ts)
-  parse (TBitwiseXor : ts) = (BitwiseXor, ts)
-  parse (TLeftShift : ts) = (LeftShift, ts)
-  parse (TRightShift : ts) = (RightShift, ts)
-  parse (TLogicalAnd : ts) = (And, ts)
-  parse (TLogicalOr : ts) = (Or, ts)
-  parse (TEqualTo : ts) = (EqualTo, ts)
-  parse (TNotEqualTo : ts) = (NotEqualTo, ts)
-  parse (TLessThan : ts) = (LessThan, ts)
-  parse (TLessThanOrEqualTo : ts) = (LessThanOrEqualTo, ts)
-  parse (TGreaterThan : ts) = (GreaterThan, ts)
-  parse (TGreaterThanOrEqualTo : ts) = (GreaterThanOrEqualTo, ts)
-  parse _ = error "Invalid binary operator"
-
-instance Parseable UnaryOperator where
-  parse :: [Token] -> (UnaryOperator, [Token])
-  parse (TTilde : ts) = (Complement, ts)
-  parse (THyphen : ts) = (Negate, ts)
-  parse (TExclamation : ts) = (Not, ts)
-  parse _ = error "Invalid unary operator"
-
-parseProgram :: [Token] -> Program
-parseProgram = fst . parse
+parseAll :: [Token] -> Program
+parseAll tokens = case runParser parseProgram tokens of
+  Right (program, []) -> program
+  Right (_, rest) -> error $ "Unparsed tokens: " ++ show rest
+  Left err -> error err

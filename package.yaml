@@ -8,9 +8,6 @@ maintainer:
 license: MIT
 dependencies:
 - base >= 4.7 && < 5
-- megaparsec
-- text
-- pretty
 - regex-pcre
 - directory
 - process
