@@ -162,7 +162,7 @@ globalNameGenerator prefix = do
 
 instance Emittable Expr where
   emitTacky :: Expr -> InstrSt TACVal
-  emitTacky (ConstantExpr (IntLiteral i)) = return $ TACConstant i
+  emitTacky (Constant (IntLiteral i)) = return $ TACConstant i
   emitTacky (Var (Identifier name)) = return $ TACVar name
   emitTacky (Binary And left right) = do
     false_label <- globalNameGenerator "false"
@@ -244,14 +244,20 @@ instance Emittable Expr where
     (num, instr) <- get
     put (num, instr ++ [TACBinary (tackyAssignOp op) lhs rhs (TACVar dst_name), TACCopy (TACVar dst_name) lhs])
     return lhs
-
--- emitTacky (CompoundAssignment op v e) = do
---   lhs <- emitTacky v
---   rhs <- emitTacky e
---   dst_name <- globalNameGenerator "tmp."
---   (num, instr) <- get
---   put (num, instr ++ [TACBinary (tackyBinOp op) lhs rhs (TACVar dst_name)])
---   return $ TACVar dst_name
+  emitTacky (Conditional cond thenExpr elseExpr) = do
+    cond_val <- emitTacky cond
+    else_label <- globalNameGenerator "else"
+    end_label <- globalNameGenerator "end"
+    dst_name <- globalNameGenerator "tmp."
+    (num, instr) <- get
+    put (num, instr ++ [TACJumpIfZero cond_val else_label])
+    then_val <- emitTacky thenExpr
+    (num', instr') <- get
+    put (num', instr' ++ [TACCopy then_val (TACVar dst_name), TACJump end_label, TACLabel else_label])
+    else_val <- emitTacky elseExpr
+    (num'', instr'') <- get
+    put (num'', instr'' ++ [TACCopy else_val (TACVar dst_name), TACLabel end_label])
+    return $ TACVar dst_name
 
 instance Emittable Declaration where
   emitTacky :: Declaration -> InstrSt TACVal
@@ -271,6 +277,36 @@ instance Emittable Stmt where
     return src
   emitTacky (ExprStmt e) = emitTacky e
   emitTacky NullStmt = return $ TACConstant 0
+  emitTacky (IfStmt cond thenStmt (Just elseStmt)) = do
+    cond_val <- emitTacky cond
+    else_label <- globalNameGenerator "else"
+    end_label <- globalNameGenerator "end"
+    (num, instr) <- get
+    put (num, instr ++ [TACJumpIfZero cond_val else_label])
+    _ <- emitTacky thenStmt
+    (num', instr') <- get
+    put (num', instr' ++ [TACJump end_label, TACLabel else_label])
+    _ <- emitTacky elseStmt
+    (num'', instr'') <- get
+    put (num'', instr'' ++ [TACLabel end_label])
+    return $ TACConstant 0
+  emitTacky (IfStmt cond thenStmt Nothing) = do
+    cond_val <- emitTacky cond
+    end_label <- globalNameGenerator "end"
+    (num, instr) <- get
+    put (num, instr ++ [TACJumpIfZero cond_val end_label])
+    _ <- emitTacky thenStmt
+    (num', instr') <- get
+    put (num', instr' ++ [TACLabel end_label])
+    return $ TACConstant 0
+  emitTacky (LabelStmt (Identifier name)) = do
+    (num, instr) <- get
+    put (num, instr ++ [TACLabel $ name ++ ".label"])
+    return $ TACConstant 0
+  emitTacky (GotoStmt (Identifier name)) = do
+    (num, instr) <- get
+    put (num, instr ++ [TACJump $ name ++ ".label"])
+    return $ TACConstant 0
 
 instance Emittable BlockItem where
   emitTacky :: BlockItem -> InstrSt TACVal

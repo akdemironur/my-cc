@@ -52,13 +52,21 @@ data Token
   | TIntKeyword
   | TVoidKeyword
   | TReturnKeyword
+  | TIfKeyword
+  | TElseKeyword
+  | TQuestionMark
+  | TColon
+  | TGotoKeyword
   deriving (Show, Eq)
 
 keywords :: [String]
 keywords =
   [ "int",
     "void",
-    "return"
+    "return",
+    "if",
+    "else",
+    "goto"
   ]
 
 identifierRegex :: String
@@ -120,6 +128,9 @@ tokenRegexes =
     ("\\Aint\\b", const TIntKeyword),
     ("\\Avoid\\b", const TVoidKeyword),
     ("\\Areturn\\b", const TReturnKeyword),
+    ("\\Aif\\b", const TIfKeyword),
+    ("\\Aelse\\b", const TElseKeyword),
+    ("\\Agoto\\b", const TGotoKeyword),
     ("\\A~", const TTilde),
     ("\\A--", const TTwoHyphens),
     ("\\A\\+\\+", const TTwoPlus),
@@ -158,7 +169,9 @@ tokenRegexes =
     ("\\A\\|=", const TBitwiseOrAssignment),
     ("\\A\\^=", const TBitwiseXorAssignment),
     ("\\A<<=", const TLeftShiftAssignment),
-    ("\\A>>=", const TRightShiftAssignment)
+    ("\\A>>=", const TRightShiftAssignment),
+    ("\\A\\?", const TQuestionMark),
+    ("\\A:", const TColon)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)

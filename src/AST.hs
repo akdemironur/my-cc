@@ -1,4 +1,3 @@
-{-# HLINT ignore "Use newtype instead of data" #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
@@ -7,7 +6,7 @@ module AST where
 
 import Lexer ()
 
-data Program = Program [Function] deriving (Eq)
+newtype Program = Program [Function] deriving (Eq)
 
 data Function = Function Identifier [BlockItem] deriving (Eq)
 
@@ -18,23 +17,27 @@ data Type
 
 data Parameter = Parameter Type Identifier deriving (Eq)
 
-data IntLiteral = IntLiteral Int deriving (Eq)
+newtype IntLiteral = IntLiteral Int deriving (Eq)
 
-data Identifier = Identifier String deriving (Eq, Ord)
+newtype Identifier = Identifier String deriving (Eq, Ord)
 
 data Stmt
   = ReturnStmt Expr
   | ExprStmt Expr
+  | IfStmt Expr Stmt (Maybe Stmt)
   | NullStmt
+  | LabelStmt Identifier
+  | GotoStmt Identifier
   deriving (Eq)
 
 data Expr
-  = ConstantExpr IntLiteral
+  = Constant IntLiteral
   | Var Identifier
   | Unary UnaryOp Expr
   | PostFix Expr PostOp
   | Binary BinaryOp Expr Expr
   | Assignment AssignmentOp Expr Expr
+  | Conditional Expr Expr Expr
   deriving (Eq)
 
 data AssignmentOp
@@ -69,6 +72,7 @@ data Operator
   | B BinaryOp
   | P PostOp
   | A AssignmentOp
+  | C ConditionalOp
   deriving (Eq)
 
 data Declaration = Declaration Identifier (Maybe Expr) deriving (Eq)
@@ -76,6 +80,10 @@ data Declaration = Declaration Identifier (Maybe Expr) deriving (Eq)
 data BlockItem
   = BlockStmt Stmt
   | BlockDecl Declaration
+  deriving (Eq)
+
+data ConditionalOp
+  = ConditionalOp
   deriving (Eq)
 
 data BinaryOp
@@ -101,6 +109,10 @@ data BinaryOp
 
 class OpPrecedence a where
   opPrecedence :: a -> Int
+
+instance OpPrecedence ConditionalOp where
+  opPrecedence :: ConditionalOp -> Int
+  opPrecedence ConditionalOp = 3
 
 instance OpPrecedence UnaryOp where
   opPrecedence :: UnaryOp -> Int
@@ -219,11 +231,20 @@ instance Show Stmt where
     "Expr(\n"
       ++ indent (show e)
       ++ "\n)"
+  show (IfStmt e s1 s2) =
+    "If(\n"
+      ++ indent ("Condition: " ++ show e)
+      ++ ",\n"
+      ++ indent ("Then: " ++ show s1)
+      ++ ",\n"
+      ++ indent ("Else: " ++ maybe "None" show s2)
   show NullStmt = "Null"
+  show (LabelStmt i) = "Label(" ++ show i ++ ")"
+  show (GotoStmt i) = "Goto(" ++ show i ++ ")"
 
 instance Show Expr where
   show :: Expr -> String
-  show (ConstantExpr i) = "Constant(" ++ show i ++ ")"
+  show (Constant i) = "Constant(" ++ show i ++ ")"
   show (Unary op e) =
     "Unary(\n"
       ++ "  operator: "
@@ -258,6 +279,18 @@ instance Show Expr where
       ++ show e1
       ++ ", "
       ++ show e2
+      ++ ")"
+  show (Conditional e1 e2 e3) =
+    "Conditional(\n"
+      ++ "  condition: "
+      ++ indent (show e1)
+      ++ ",\n"
+      ++ "  then: "
+      ++ indent (show e2)
+      ++ ",\n"
+      ++ "  else: "
+      ++ indent (show e3)
+      ++ "\n"
       ++ ")"
 
 instance Show UnaryOp where

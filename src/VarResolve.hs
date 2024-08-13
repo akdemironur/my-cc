@@ -43,9 +43,16 @@ instance Resolve Declaration where
 instance Resolve Stmt where
   resolve :: Stmt -> VarResolve (Either String Stmt)
   resolve stmt = case stmt of
+    s@(LabelStmt _) -> pure $ Right s
+    s@(GotoStmt _) -> pure $ Right s
     ExprStmt e -> resolveHelper ExprStmt e
     ReturnStmt e -> resolveHelper ReturnStmt e
     NullStmt -> pure $ Right NullStmt
+    IfStmt c t e -> do
+      c' <- resolve c
+      t' <- resolve t
+      e' <- mapM resolve e
+      return $ IfStmt <$> c' <*> t' <*> sequence e'
     where
       resolveHelper constr e =
         resolve e >>= \case
@@ -85,7 +92,12 @@ instance Resolve Expr where
     e' <- resolve e
     return $ PostFix <$> e' <*> pure op
   resolve (PostFix e _) = return . Left $ "Invalid post-fix expression: " ++ show e
-  resolve (ConstantExpr i) = pure $ Right $ ConstantExpr i
+  resolve (Constant i) = pure $ Right $ Constant i
+  resolve (Conditional c t e) = do
+    c' <- resolve c
+    t' <- resolve t
+    e' <- resolve e
+    return $ Conditional <$> c' <*> t' <*> e'
 
 instance Resolve Program where
   resolve :: Program -> VarResolve (Either String Program)
@@ -109,6 +121,9 @@ instance Resolve BlockItem where
       resolveHelper constr bi = do
         blockItem' <- resolve bi
         return $ constr <$> blockItem'
+
+varResolve :: Program -> Either String Program
+varResolve program = evalState (resolve program) (M.empty, 0)
 
 resolveAll :: Program -> Program
 resolveAll program = case evalState (resolve program) (M.empty, 0) of

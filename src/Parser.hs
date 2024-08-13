@@ -10,7 +10,7 @@ module Parser where
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, (<|>))
 import Control.Monad (MonadPlus, mzero, void)
-import Data.Functor ((<&>))
+import Data.Functor (($>), (<&>))
 import Lexer
 
 data Error t s
@@ -56,6 +56,11 @@ instance Alternative Parser where
 instance MonadPlus Parser where
   mzero :: Parser a
   mzero = empty
+
+try :: Parser a -> Parser ()
+try (Parser p) = Parser $ \tokens -> case p tokens of
+  Left err -> Left err
+  Right (_, _) -> Right ((), tokens)
 
 satisfy :: (Token -> Bool) -> Parser Token
 satisfy p = Parser $ \tokens -> case tokens of
@@ -115,6 +120,9 @@ parsePostOp = satisfy isPostOp <&> tokenToPostOp
 parseUnaryOp :: Parser UnaryOp
 parseUnaryOp = satisfy isUnOp <&> tokenToUnaryOp
 
+parseConditionalOp :: Int -> Parser ConditionalOp
+parseConditionalOp minPrec = satisfy (\t -> t == TQuestionMark && opPrecedence ConditionalOp >= minPrec) $> ConditionalOp
+
 tokenToUnaryOp :: Token -> UnaryOp
 tokenToUnaryOp TTilde = Complement
 tokenToUnaryOp THyphen = Negate
@@ -168,7 +176,7 @@ parsePExpr = do
 
 parsePrimaryExpr :: Parser Expr
 parsePrimaryExpr =
-  ConstantExpr <$> parseIntLiteral
+  Constant <$> parseIntLiteral
     <|> Var <$> parseIdentifier
     <|> (parseToken TOpenParen *> parseExpr <* parseToken TCloseParen)
 
@@ -188,6 +196,7 @@ parseBAExpr mp = do
       next_op <-
         B <$> parseBinaryOp minPrec
           <|> A <$> parseAssignmentOp minPrec
+          <|> C <$> parseConditionalOp minPrec
       case next_op of
         B op -> do
           rightExpr <- parseExprPrec (opPrecedence op + 1)
@@ -197,6 +206,11 @@ parseBAExpr mp = do
           rightExpr <- parseExprPrec (opPrecedence op)
           let newLeft = Assignment op leftExpr rightExpr
           parseBAExprHelper newLeft minPrec <|> return newLeft
+        C op -> do
+          middle <- parseExpr <* parseToken TColon
+          right <- parseExprPrec (opPrecedence op)
+          let newLeft = Conditional leftExpr middle right
+          parseBAExprHelper newLeft minPrec <|> return newLeft
         _ -> empty
 
 parseStmt :: Parser Stmt
@@ -204,6 +218,33 @@ parseStmt =
   ReturnStmt <$> (parseToken TReturnKeyword *> parseExpr <* parseToken TSemicolon)
     <|> NullStmt <$ parseToken TSemicolon
     <|> ExprStmt <$> (parseExpr <* parseToken TSemicolon)
+    <|> parseIfStmt
+    <|> parseLabelStmt
+    <|> parseGotoStmt
+
+parseLabelStmt :: Parser Stmt
+parseLabelStmt = do
+  identifier <- parseIdentifier
+  parseToken TColon
+  _ <- try parseStmt
+  return (LabelStmt identifier)
+
+parseGotoStmt :: Parser Stmt
+parseGotoStmt = do
+  parseToken TGotoKeyword
+  identifier <- parseIdentifier
+  parseToken TSemicolon
+  return (GotoStmt identifier)
+
+parseIfStmt :: Parser Stmt
+parseIfStmt = do
+  parseToken TIfKeyword
+  parseToken TOpenParen
+  condition <- parseExpr
+  parseToken TCloseParen
+  thenBlock <- parseStmt
+  elseBlock <- optional (parseToken TElseKeyword *> parseStmt)
+  return (IfStmt condition thenBlock elseBlock)
 
 parseBlockItem :: Parser BlockItem
 parseBlockItem =

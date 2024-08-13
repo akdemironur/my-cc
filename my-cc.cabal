@@ -17,8 +17,10 @@ library
   exposed-modules:
       AST
       Codegen
+      LabelResolve
       Lexer
       Parser
+      Pass
       Tacky
       VarResolve
   other-modules:

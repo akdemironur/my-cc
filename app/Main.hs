@@ -7,6 +7,7 @@ import Codegen
 import Data.Functor ((<&>))
 import Lexer (lex)
 import Parser (parseAll)
+import Pass
 import System.Directory (removeFile)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitWith)
@@ -14,7 +15,6 @@ import System.FilePath (dropExtension, replaceExtension)
 import System.Info (arch)
 import System.Process (callCommand)
 import Tacky
-import VarResolve
 import Prelude hiding (lex)
 
 preprocess :: FilePath -> IO String
