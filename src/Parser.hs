@@ -221,6 +221,7 @@ parseStmt =
     <|> parseIfStmt
     <|> parseLabelStmt
     <|> parseGotoStmt
+    <|> parseBlockStmt
 
 parseLabelStmt :: Parser Stmt
 parseLabelStmt = do
@@ -228,6 +229,9 @@ parseLabelStmt = do
   parseToken TColon
   _ <- try parseStmt
   return (LabelStmt identifier)
+
+parseBlockStmt :: Parser Stmt
+parseBlockStmt = CompoundStmt <$> parseBlock
 
 parseGotoStmt :: Parser Stmt
 parseGotoStmt = do
@@ -254,6 +258,13 @@ parseBlockItem =
 parseManyBlockItem :: Parser [BlockItem]
 parseManyBlockItem = many parseBlockItem
 
+parseBlock :: Parser Block
+parseBlock = do
+  parseToken TOpenBrace
+  items <- many parseBlockItem
+  parseToken TCloseBrace
+  return (Block items)
+
 parseFunction :: Parser Function
 parseFunction = do
   parseToken TIntKeyword
@@ -261,10 +272,7 @@ parseFunction = do
   parseToken TOpenParen
   parseToken TVoidKeyword
   parseToken TCloseParen
-  parseToken TOpenBrace
-  block <- many parseBlockItem
-  parseToken TCloseBrace
-  return (Function name block)
+  Function name <$> parseBlock
 
 parseProgram :: Parser Program
 parseProgram = do

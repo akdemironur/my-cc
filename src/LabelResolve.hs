@@ -19,7 +19,11 @@ instance LabelResolvePass1 Program where
 
 instance LabelResolvePass1 Function where
   resolveP1 :: Function -> LabelState (Either String Function)
-  resolveP1 (Function name stmts) = fmap (fmap (Function name) . sequence) (traverse resolveP1 stmts)
+  resolveP1 (Function name block) = fmap (fmap (Function name)) (resolveP1 block)
+
+instance LabelResolvePass1 Block where
+  resolveP1 :: Block -> LabelState (Either String Block)
+  resolveP1 (Block items) = fmap (fmap Block . sequence) (traverse resolveP1 items)
 
 instance LabelResolvePass1 BlockItem where
   resolveP1 :: BlockItem -> LabelState (Either String BlockItem)
@@ -45,6 +49,7 @@ instance LabelResolvePass1 Stmt where
       (Left err, _) -> return $ Left err
       (_, Left err) -> return $ Left err
       (Right thenBlock'', Right elseBlock'') -> return $ Right $ IfStmt cond thenBlock'' elseBlock''
+  resolveP1 (CompoundStmt block) = fmap (fmap CompoundStmt) (resolveP1 block)
   resolveP1 stmt = return $ Right stmt
 
 instance LabelResolvePass1 Declaration where
@@ -60,7 +65,11 @@ instance LabelResolvePass2 Program where
 
 instance LabelResolvePass2 Function where
   resolveP2 :: Function -> LabelState (Either String Function)
-  resolveP2 (Function name stmts) = fmap (fmap (Function name) . sequence) (traverse resolveP2 stmts)
+  resolveP2 (Function name stmts) = fmap (fmap (Function name)) (resolveP2 stmts)
+
+instance LabelResolvePass2 Block where
+  resolveP2 :: Block -> LabelState (Either String Block)
+  resolveP2 (Block items) = fmap (fmap Block . sequence) (traverse resolveP2 items)
 
 instance LabelResolvePass2 BlockItem where
   resolveP2 :: BlockItem -> LabelState (Either String BlockItem)
@@ -81,6 +90,7 @@ instance LabelResolvePass2 Stmt where
       (Left err, _) -> return $ Left err
       (_, Left err) -> return $ Left err
       (Right thenBlock'', Right elseBlock'') -> return $ Right $ IfStmt cond thenBlock'' elseBlock''
+  resolveP2 (CompoundStmt block) = fmap (fmap CompoundStmt) (resolveP2 block)
   resolveP2 stmt = return $ Right stmt
 
 labelResolvePass :: Program -> LabelState (Either String Program)

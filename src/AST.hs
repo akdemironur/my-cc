@@ -8,7 +8,7 @@ import Lexer ()
 
 newtype Program = Program [Function] deriving (Eq)
 
-data Function = Function Identifier [BlockItem] deriving (Eq)
+data Function = Function Identifier Block deriving (Eq)
 
 data Type
   = IntType
@@ -28,6 +28,7 @@ data Stmt
   | NullStmt
   | LabelStmt Identifier
   | GotoStmt Identifier
+  | CompoundStmt Block
   deriving (Eq)
 
 data Expr
@@ -76,6 +77,8 @@ data Operator
   deriving (Eq)
 
 data Declaration = Declaration Identifier (Maybe Expr) deriving (Eq)
+
+newtype Block = Block [BlockItem] deriving (Eq)
 
 data BlockItem
   = BlockStmt Stmt
@@ -186,15 +189,19 @@ instance Show Declaration where
 
 instance Show Function where
   show :: Function -> String
-  show (Function name statements) =
+  show (Function name block) =
     "Function(\n"
       ++ "  name: "
       ++ show name
       ++ ",\n"
       ++ "  body: "
-      ++ indent (unlines (map show statements))
+      ++ indent (show block)
       ++ "\n"
       ++ ")"
+
+instance Show Block where
+  show :: Block -> String
+  show (Block items) = "Block(\n" ++ indent (unlines (map show items)) ++ ")"
 
 instance Show Type where
   show :: Type -> String
@@ -241,6 +248,7 @@ instance Show Stmt where
   show NullStmt = "Null"
   show (LabelStmt i) = "Label(" ++ show i ++ ")"
   show (GotoStmt i) = "Goto(" ++ show i ++ ")"
+  show (CompoundStmt b) = "Compound(\n" ++ indent (show b) ++ ")"
 
 instance Show Expr where
   show :: Expr -> String

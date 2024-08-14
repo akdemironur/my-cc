@@ -8,6 +8,7 @@ module Tacky where
 
 import AST
 import Control.Monad.State
+import Data.Foldable
 import qualified Data.Map as M
 
 type TACIdentifier = String
@@ -165,8 +166,8 @@ instance Emittable Expr where
   emitTacky (Constant (IntLiteral i)) = return $ TACConstant i
   emitTacky (Var (Identifier name)) = return $ TACVar name
   emitTacky (Binary And left right) = do
-    false_label <- globalNameGenerator "false"
-    end_label <- globalNameGenerator "end"
+    false_label <- globalNameGenerator "false."
+    end_label <- globalNameGenerator "end."
     result <- globalNameGenerator "result."
     v1 <- emitTacky left
     (num, instr) <- get
@@ -186,8 +187,8 @@ instance Emittable Expr where
       )
     return $ TACVar result
   emitTacky (Binary Or left right) = do
-    true_label <- globalNameGenerator "true"
-    end_label <- globalNameGenerator "end"
+    true_label <- globalNameGenerator "true."
+    end_label <- globalNameGenerator "end."
     result <- globalNameGenerator "result."
     v1 <- emitTacky left
     (num, instr) <- get
@@ -246,8 +247,8 @@ instance Emittable Expr where
     return lhs
   emitTacky (Conditional cond thenExpr elseExpr) = do
     cond_val <- emitTacky cond
-    else_label <- globalNameGenerator "else"
-    end_label <- globalNameGenerator "end"
+    else_label <- globalNameGenerator "else."
+    end_label <- globalNameGenerator "end."
     dst_name <- globalNameGenerator "tmp."
     (num, instr) <- get
     put (num, instr ++ [TACJumpIfZero cond_val else_label])
@@ -279,8 +280,8 @@ instance Emittable Stmt where
   emitTacky NullStmt = return $ TACConstant 0
   emitTacky (IfStmt cond thenStmt (Just elseStmt)) = do
     cond_val <- emitTacky cond
-    else_label <- globalNameGenerator "else"
-    end_label <- globalNameGenerator "end"
+    else_label <- globalNameGenerator "else."
+    end_label <- globalNameGenerator "end."
     (num, instr) <- get
     put (num, instr ++ [TACJumpIfZero cond_val else_label])
     _ <- emitTacky thenStmt
@@ -292,7 +293,7 @@ instance Emittable Stmt where
     return $ TACConstant 0
   emitTacky (IfStmt cond thenStmt Nothing) = do
     cond_val <- emitTacky cond
-    end_label <- globalNameGenerator "end"
+    end_label <- globalNameGenerator "end."
     (num, instr) <- get
     put (num, instr ++ [TACJumpIfZero cond_val end_label])
     _ <- emitTacky thenStmt
@@ -307,20 +308,19 @@ instance Emittable Stmt where
     (num, instr) <- get
     put (num, instr ++ [TACJump $ name ++ ".label"])
     return $ TACConstant 0
+  emitTacky (CompoundStmt block) = emitTacky block
 
 instance Emittable BlockItem where
   emitTacky :: BlockItem -> InstrSt TACVal
   emitTacky (BlockStmt stmt) = emitTacky stmt
   emitTacky (BlockDecl decl) = emitTacky decl
 
-emitTackyList :: (Emittable a) => [a] -> [TACInstruction]
-emitTackyList [] = []
-emitTackyList instrs = snd $ execState (foldM (\_ instr -> emitTacky instr) (TACConstant 0) instrs) (M.empty, [])
+instance Emittable Block where
+  emitTacky :: Block -> InstrSt TACVal
+  emitTacky (Block items) = traverse_ emitTacky items >> return (TACConstant 0)
 
 toTACFunc :: Function -> TACFunction
-toTACFunc (Function (Identifier name) body) = TACFunction name (instrs ++ [TACReturn (TACConstant 0)])
-  where
-    instrs = emitTackyList body
+toTACFunc (Function (Identifier name) block) = TACFunction name (snd (execState (emitTacky block) (M.empty, [])) ++ [TACReturn (TACConstant 0)])
 
 toTACProg :: Program -> TACProgram
 toTACProg (Program functions) = TACProgram (fmap toTACFunc functions)
