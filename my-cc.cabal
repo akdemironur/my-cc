@@ -16,9 +16,11 @@ build-type:     Simple
 library
   exposed-modules:
       AST
+      CaseResolve
       Codegen
       LabelResolve
       Lexer
+      LoopLabeling
       Parser
       Pass
       Tacky

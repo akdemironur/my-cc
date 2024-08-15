@@ -1,16 +1,16 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 {-# HLINT ignore "Use lambda-case" #-}
 
-module Parser where
+module Parser (parse) where
 
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, (<|>))
 import Control.Monad (MonadPlus, mzero, void)
 import Data.Functor (($>), (<&>))
+import qualified Data.Set as S
 import Lexer
 
 data Error t s
@@ -146,14 +146,14 @@ parseIntLiteral = Parser $ \tokens -> case tokens of
   (TConstant i : ts) -> Right (IntLiteral i, ts)
   _ -> Left "Invalid integer literal"
 
-parseType :: Parser Type
-parseType = Parser $ \tokens -> case tokens of
-  (TIntKeyword : ts) -> Right (IntType, ts)
-  (TVoidKeyword : ts) -> Right (VoidType, ts)
-  _ -> Left "Invalid type"
+-- parseType :: Parser Type
+-- parseType = Parser $ \tokens -> case tokens of
+--   (TIntKeyword : ts) -> Right (IntType, ts)
+--   (TVoidKeyword : ts) -> Right (VoidType, ts)
+--   _ -> Left "Invalid type"
 
-parseParameter :: Parser Parameter
-parseParameter = Parameter <$> parseType <*> parseIdentifier
+-- parseParameter :: Parser Parameter
+-- parseParameter = Parameter <$> parseType <*> parseIdentifier
 
 parseDeclaration :: Parser Declaration
 parseDeclaration = do
@@ -219,19 +219,103 @@ parseStmt =
     <|> NullStmt <$ parseToken TSemicolon
     <|> ExprStmt <$> (parseExpr <* parseToken TSemicolon)
     <|> parseIfStmt
-    <|> parseLabelStmt
+    <|> parseLabeledStmt
     <|> parseGotoStmt
     <|> parseBlockStmt
+    <|> parseBreakStmt
+    <|> parseContinueStmt
+    <|> parseWhileStmt
+    <|> parseDoWhileStmt
+    <|> parseForStmt
+    <|> parseSwitchStmt
+    <|> parseCaseStmt
+    <|> parseDefaultStmt
 
-parseLabelStmt :: Parser Stmt
-parseLabelStmt = do
+parseForInit :: Parser ForInit
+parseForInit = parseForInitDecl <|> parseForInitExpr
+  where
+    parseForInitDecl :: Parser ForInit
+    parseForInitDecl =
+      InitDecl
+        <$> parseDeclaration
+    parseForInitExpr :: Parser ForInit
+    parseForInitExpr =
+      InitExpr
+        <$> optional parseExpr
+        <* parseToken TSemicolon
+
+parseLabeledStmt :: Parser Stmt
+parseLabeledStmt = do
   identifier <- parseIdentifier
   parseToken TColon
-  _ <- try parseStmt
-  return (LabelStmt identifier)
+  LabeledStmt identifier <$> parseStmt
 
 parseBlockStmt :: Parser Stmt
 parseBlockStmt = CompoundStmt <$> parseBlock
+
+parseBreakStmt :: Parser Stmt
+parseBreakStmt =
+  BreakStmt Nothing
+    <$ parseToken TBreakKeyword
+    <* parseToken TSemicolon
+
+parseContinueStmt :: Parser Stmt
+parseContinueStmt =
+  ContinueStmt Nothing
+    <$ parseToken TContinueKeyword
+    <* parseToken TSemicolon
+
+parseWhileStmt :: Parser Stmt
+parseWhileStmt = do
+  parseToken TWhileKeyword
+  parseToken TOpenParen
+  condition <- parseExpr
+  parseToken TCloseParen
+  WhileStmt Nothing condition <$> parseStmt
+
+parseDoWhileStmt :: Parser Stmt
+parseDoWhileStmt = do
+  parseToken TDoKeyword
+  block <- parseStmt
+  parseToken TWhileKeyword
+  parseToken TOpenParen
+  condition <- parseExpr
+  parseToken TCloseParen
+  parseToken TSemicolon
+  return (DoWhileStmt Nothing block condition)
+
+parseForStmt :: Parser Stmt
+parseForStmt = do
+  parseToken TForKeyword
+  parseToken TOpenParen
+  forinit <- parseForInit
+  condition <- optional parseExpr
+  parseToken TSemicolon
+  iter <- optional parseExpr
+  parseToken TCloseParen
+  ForStmt Nothing forinit condition iter <$> parseStmt
+
+parseCaseStmt :: Parser Stmt
+parseCaseStmt = do
+  parseToken TCaseKeyword
+  expr <- parseExpr
+  parseToken TColon
+  CaseStmt Nothing expr <$> parseStmt
+
+parseDefaultStmt :: Parser Stmt
+parseDefaultStmt = do
+  parseToken TDefaultKeyword
+  parseToken TColon
+  _ <- try parseStmt
+  return $ DefaultStmt Nothing
+
+parseSwitchStmt :: Parser Stmt
+parseSwitchStmt = do
+  parseToken TSwitchKeyword
+  parseToken TOpenParen
+  expr <- parseExpr
+  parseToken TCloseParen
+  SwitchStmt Nothing S.empty False expr <$> parseStmt
 
 parseGotoStmt :: Parser Stmt
 parseGotoStmt = do
@@ -255,9 +339,6 @@ parseBlockItem =
   BlockStmt <$> parseStmt
     <|> BlockDecl <$> parseDeclaration
 
-parseManyBlockItem :: Parser [BlockItem]
-parseManyBlockItem = many parseBlockItem
-
 parseBlock :: Parser Block
 parseBlock = do
   parseToken TOpenBrace
@@ -279,8 +360,8 @@ parseProgram = do
   function <- parseFunction
   return (Program [function])
 
-parseAll :: [Token] -> Program
-parseAll tokens = case runParser parseProgram tokens of
+parse :: [Token] -> Program
+parse tokens = case runParser parseProgram tokens of
   Right (program, []) -> program
   Right (_, rest) -> error $ "Unparsed tokens: " ++ show rest
   Left err -> error err

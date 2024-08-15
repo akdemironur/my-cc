@@ -6,7 +6,7 @@ import AST ()
 import Codegen
 import Data.Functor ((<&>))
 import Lexer (lex)
-import Parser (parseAll)
+import Parser (parse)
 import Pass
 import System.Directory (removeFile)
 import System.Environment (getArgs)
@@ -41,13 +41,13 @@ main = do
     ["--parse", inputFile] ->
       preprocess inputFile
         >>= print
-          . parseAll
+          . parse
           . lex
     ["--validate", inputFile] ->
       preprocess inputFile
         >>= print
           . resolveAll
-          . parseAll
+          . parse
           . lex
     ["--codegen", inputFile] ->
       preprocess inputFile
@@ -55,14 +55,14 @@ main = do
           . codegen
           . toTACProg
           . resolveAll
-          . parseAll
+          . parse
           . lex
     ["--tacky", inputFile] ->
       preprocess inputFile
         >>= print
           . toTACProg
           . resolveAll
-          . parseAll
+          . parse
           . lex
     ["-S", inputFile] -> compileToAssembly inputFile
     [inputFile] -> compileAndLink inputFile
@@ -89,7 +89,7 @@ compileToAssembly inputFile = do
               . codegen
               . toTACProg
               . resolveAll
-              . parseAll
+              . parse
               . lex
           )
   assemblyContent `seq` writeFile assemblyFile assemblyContent

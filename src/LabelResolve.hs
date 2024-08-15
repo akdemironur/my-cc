@@ -1,6 +1,6 @@
 {-# LANGUAGE InstanceSigs #-}
 
-module LabelResolve where
+module LabelResolve (labelResolve) where
 
 import AST
 import Control.Monad.State
@@ -32,15 +32,20 @@ instance LabelResolvePass1 BlockItem where
 
 instance LabelResolvePass1 Stmt where
   resolveP1 :: Stmt -> LabelStateT Stmt
-  resolveP1 (LabelStmt label) = do
+  resolveP1 (LabeledStmt label stmt) = do
     labels <- get
     if S.member label labels
       then lift $ Left $ "Label " ++ show label ++ " already declared"
       else do
         put (S.insert label labels)
-        return $ LabelStmt label
+        LabeledStmt label <$> resolveP1 stmt
   resolveP1 (IfStmt cond thenBlock elseBlock) = IfStmt cond <$> resolveP1 thenBlock <*> traverse resolveP1 elseBlock
   resolveP1 (CompoundStmt block) = CompoundStmt <$> resolveP1 block
+  resolveP1 (WhileStmt label cond block) = WhileStmt label cond <$> resolveP1 block
+  resolveP1 (DoWhileStmt label block cond) = DoWhileStmt label <$> resolveP1 block <*> return cond
+  resolveP1 (ForStmt label forInit cond iter block) = ForStmt label forInit cond iter <$> resolveP1 block
+  resolveP1 (SwitchStmt label set def expr block) = SwitchStmt label set def expr <$> resolveP1 block
+  resolveP1 (CaseStmt label expr stmt) = CaseStmt label expr <$> resolveP1 stmt
   resolveP1 stmt = return stmt
 
 instance LabelResolvePass1 Declaration where
@@ -76,6 +81,12 @@ instance LabelResolvePass2 Stmt where
       else lift $ Left $ "Label " ++ show label ++ " not found"
   resolveP2 (IfStmt cond thenBlock elseBlock) = IfStmt cond <$> resolveP2 thenBlock <*> traverse resolveP2 elseBlock
   resolveP2 (CompoundStmt block) = CompoundStmt <$> resolveP2 block
+  resolveP2 (WhileStmt label cond block) = WhileStmt label cond <$> resolveP2 block
+  resolveP2 (DoWhileStmt label block cond) = DoWhileStmt label <$> resolveP2 block <*> return cond
+  resolveP2 (ForStmt label forInit cond iter block) = ForStmt label forInit cond iter <$> resolveP2 block
+  resolveP2 (SwitchStmt label set def expr block) = SwitchStmt label set def expr <$> resolveP2 block
+  resolveP2 (LabeledStmt label stmt) = LabeledStmt label <$> resolveP2 stmt
+  resolveP2 (CaseStmt label expr stmt) = CaseStmt label expr <$> resolveP2 stmt
   resolveP2 stmt = return stmt
 
 labelResolve :: Program -> Either String Program

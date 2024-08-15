@@ -1,10 +1,17 @@
 {-# LANGUAGE InstanceSigs #-}
-{-# HLINT ignore "Use newtype instead of data" #-}
-{-# OPTIONS_GHC -Wno-missing-export-lists #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 
-module Tacky where
+module Tacky
+  ( TACProgram (..),
+    TACFunction (..),
+    TACInstruction (..),
+    TACVal (..),
+    TACUnaryOp (..),
+    TACBinaryOp (..),
+    TACIdentifier,
+    isRelationalOp,
+    toTACProg,
+  )
+where
 
 import AST
 import Control.Monad.State
@@ -13,9 +20,21 @@ import qualified Data.Map as M
 
 type TACIdentifier = String
 
-data TACProgram = TACProgram [TACFunction] deriving (Show, Eq)
+newtype TACProgram = TACProgram [TACFunction] deriving (Show, Eq)
 
 data TACFunction = TACFunction TACIdentifier [TACInstruction] deriving (Show, Eq)
+
+breakLabel :: Maybe Identifier -> String
+breakLabel (Just (Identifier name)) = name ++ ".break"
+breakLabel Nothing = error "BreakLabel: This shouldnt happen"
+
+continueLabel :: Maybe Identifier -> String
+continueLabel (Just (Identifier name)) = name ++ ".continue"
+continueLabel Nothing = error "ContinueLabel: This shouldnt happen"
+
+startLabel :: Maybe Identifier -> String
+startLabel (Just (Identifier name)) = name ++ ".start"
+startLabel Nothing = error "StartLabel: This shouldnt happen"
 
 data TACInstruction
   = TACReturn TACVal
@@ -271,6 +290,14 @@ instance Emittable Declaration where
 
 instance Emittable Stmt where
   emitTacky :: Stmt -> InstrSt TACVal
+  emitTacky (ForStmt Nothing _ _ _ _) = error "ForStmt without label, this shouldnt happen"
+  emitTacky (WhileStmt Nothing _ _) = error "WhileStmt without label, this shouldnt happen"
+  emitTacky (DoWhileStmt Nothing _ _) = error "DoWhileStmt without label, this shouldnt happen"
+  emitTacky (ContinueStmt Nothing) = error "ContinueStmt without label, this shouldnt happen"
+  emitTacky (BreakStmt Nothing) = error "BreakStmt without label, this shouldnt happen"
+  emitTacky (CaseStmt Nothing _ _) = error "CaseStmt without label, this shouldnt happen"
+  emitTacky (DefaultStmt Nothing) = error "DefaultStmt without label, this shouldnt happen"
+  emitTacky (SwitchStmt Nothing _ _ _ _) = error "Switch without label, this shouldnt happen"
   emitTacky (ReturnStmt e) = do
     src <- emitTacky e
     (num, instr) <- get
@@ -300,15 +327,120 @@ instance Emittable Stmt where
     (num', instr') <- get
     put (num', instr' ++ [TACLabel end_label])
     return $ TACConstant 0
-  emitTacky (LabelStmt (Identifier name)) = do
+  emitTacky (LabeledStmt (Identifier name) stmt) = do
     (num, instr) <- get
     put (num, instr ++ [TACLabel $ name ++ ".label"])
+    _ <- emitTacky stmt
     return $ TACConstant 0
   emitTacky (GotoStmt (Identifier name)) = do
     (num, instr) <- get
     put (num, instr ++ [TACJump $ name ++ ".label"])
     return $ TACConstant 0
   emitTacky (CompoundStmt block) = emitTacky block
+  emitTacky (WhileStmt label cond block) = do
+    let continue_label = continueLabel label
+    let break_label = breakLabel label
+    (num, instr) <- get
+    put (num, instr ++ [TACLabel continue_label])
+    cond_val <- emitTacky cond
+    (num', instr') <- get
+    put (num', instr' ++ [TACJumpIfZero cond_val break_label])
+    _ <- emitTacky block
+    (num'', instr'') <- get
+    put (num'', instr'' ++ [TACJump continue_label, TACLabel break_label])
+    return $ TACConstant 0
+  emitTacky (DoWhileStmt label block cond) = do
+    let start_label = startLabel label
+    let break_label = breakLabel label
+    let continue_label = continueLabel label
+    (num, instr) <- get
+    put (num, instr ++ [TACLabel start_label])
+    _ <- emitTacky block
+    (num', instr') <- get
+    put (num', instr' ++ [TACLabel continue_label])
+    cond_val <- emitTacky cond
+    (num'', instr'') <- get
+    put (num'', instr'' ++ [TACJumpIfNotZero cond_val start_label, TACLabel break_label])
+    return $ TACConstant 0
+  emitTacky (ForStmt label forinit cond update block) = do
+    let start_label = startLabel label
+    let continue_label = continueLabel label
+    let break_label = breakLabel label
+    _ <- emitTacky forinit
+    (num, instr) <- get
+    put (num, instr ++ [TACLabel start_label])
+    case cond of
+      Just c -> do
+        cond_val <- emitTacky c
+        (num', instr') <- get
+        put (num', instr' ++ [TACJumpIfZero cond_val break_label])
+      Nothing -> return ()
+    _ <- emitTacky block
+    (num', instr') <- get
+    put (num', instr' ++ [TACLabel continue_label])
+    case update of
+      Just u -> do
+        _ <- emitTacky u
+        return ()
+      Nothing -> return ()
+    (num'', instr'') <- get
+    put (num'', instr'' ++ [TACJump start_label, TACLabel break_label])
+    return $ TACConstant 0
+  emitTacky (BreakStmt label) = do
+    (num, instr) <- get
+    put (num, instr ++ [TACJump $ breakLabel label])
+    return $ TACConstant 0
+  emitTacky (ContinueStmt label) = do
+    (num, instr) <- get
+    put (num, instr ++ [TACJump $ continueLabel label])
+    return $ TACConstant 0
+  emitTacky (SwitchStmt label'@(Just label) caseSet hasDefault expr block) = do
+    v <- emitTacky expr
+    if not hasDefault && null caseSet
+      then do
+        return $ TACConstant 0
+      else do
+        let break_label = breakLabel label'
+        traverse_ (caseToIf label v) caseSet
+        when hasDefault $ do
+          (num, instr) <- get
+          put (num, instr ++ [TACJump $ switchToDefaultTACIdentifier label])
+          return ()
+        (num, instr) <- get
+        put (num, instr ++ [TACJump break_label])
+        _ <- emitTacky block
+        (num', instr') <- get
+        put (num', instr' ++ [TACLabel break_label])
+        return $ TACConstant 0
+  emitTacky (CaseStmt (Just label) (Constant i) stmt) = do
+    (num, instr) <- get
+    put (num, instr ++ [TACLabel $ caseToTACIdentifier label i])
+    _ <- emitTacky stmt
+    return $ TACConstant 0
+  emitTacky (DefaultStmt (Just label)) = do
+    (num, instr) <- get
+    put (num, instr ++ [TACLabel $ switchToDefaultTACIdentifier label])
+    return $ TACConstant 0
+  emitTacky (CaseStmt {}) = error "CaseStmt with non-constant, this shouldnt happen"
+
+caseToTACIdentifier :: Identifier -> IntLiteral -> TACIdentifier
+caseToTACIdentifier (Identifier name) (IntLiteral i) = name ++ ".case." ++ show i
+
+switchToDefaultTACIdentifier :: Identifier -> TACIdentifier
+switchToDefaultTACIdentifier (Identifier name) = name ++ ".default"
+
+caseToIf :: Identifier -> TACVal -> IntLiteral -> InstrSt ()
+caseToIf identifier v i@(IntLiteral i') = do
+  tmp <- globalNameGenerator "tmp."
+  (num, instr) <- get
+  put (num, instr ++ [TACBinary TACEqual v (TACConstant i') (TACVar tmp), TACJumpIfNotZero (TACVar tmp) (caseToTACIdentifier identifier i)])
+  return ()
+
+instance Emittable ForInit where
+  emitTacky :: ForInit -> InstrSt TACVal
+  emitTacky (InitDecl decl) = emitTacky decl
+  emitTacky (InitExpr Nothing) = return $ TACConstant 0
+  emitTacky (InitExpr (Just e)) = emitTacky e
 
 instance Emittable BlockItem where
   emitTacky :: BlockItem -> InstrSt TACVal

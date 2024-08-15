@@ -1,9 +1,29 @@
 {-# LANGUAGE InstanceSigs #-}
-{-# OPTIONS_GHC -Wno-missing-export-lists #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-module AST where
+module AST
+  ( Program (..),
+    Function (..),
+    Type (..),
+    Parameter (..),
+    IntLiteral (..),
+    Identifier (..),
+    ForInit (..),
+    Stmt (..),
+    Expr (..),
+    AssignmentOp (..),
+    UnaryOp (..),
+    PostOp (..),
+    Operator (..),
+    Declaration (..),
+    Block (..),
+    BlockItem (..),
+    ConditionalOp (..),
+    BinaryOp (..),
+    OpPrecedence (..),
+  )
+where
 
+import qualified Data.Set as S
 import Lexer ()
 
 newtype Program = Program [Function] deriving (Eq)
@@ -17,18 +37,31 @@ data Type
 
 data Parameter = Parameter Type Identifier deriving (Eq)
 
-newtype IntLiteral = IntLiteral Int deriving (Eq)
+newtype IntLiteral = IntLiteral Int deriving (Eq, Ord)
 
 newtype Identifier = Identifier String deriving (Eq, Ord)
+
+data ForInit
+  = InitDecl Declaration
+  | InitExpr (Maybe Expr)
+  deriving (Eq)
 
 data Stmt
   = ReturnStmt Expr
   | ExprStmt Expr
   | IfStmt Expr Stmt (Maybe Stmt)
   | NullStmt
-  | LabelStmt Identifier
+  | LabeledStmt Identifier Stmt
   | GotoStmt Identifier
   | CompoundStmt Block
+  | ForStmt (Maybe Identifier) ForInit (Maybe Expr) (Maybe Expr) Stmt
+  | WhileStmt (Maybe Identifier) Expr Stmt
+  | DoWhileStmt (Maybe Identifier) Stmt Expr
+  | BreakStmt (Maybe Identifier)
+  | ContinueStmt (Maybe Identifier)
+  | SwitchStmt (Maybe Identifier) (S.Set IntLiteral) Bool Expr Stmt
+  | CaseStmt (Maybe Identifier) Expr Stmt
+  | DefaultStmt (Maybe Identifier)
   deriving (Eq)
 
 data Expr
@@ -228,6 +261,11 @@ instance Show Identifier where
   show :: Identifier -> String
   show (Identifier s) = show s
 
+instance Show ForInit where
+  show :: ForInit -> String
+  show (InitDecl decl) = "InitDecl(" ++ show decl ++ ")"
+  show (InitExpr e) = "InitExpr(" ++ maybe "None" show e ++ ")"
+
 instance Show Stmt where
   show :: Stmt -> String
   show (ReturnStmt e) =
@@ -246,9 +284,45 @@ instance Show Stmt where
       ++ ",\n"
       ++ indent ("Else: " ++ maybe "None" show s2)
   show NullStmt = "Null"
-  show (LabelStmt i) = "Label(" ++ show i ++ ")"
+  show (LabeledStmt i s) = "Label(" ++ show i ++ ", " ++ show s ++ ")"
   show (GotoStmt i) = "Goto(" ++ show i ++ ")"
   show (CompoundStmt b) = "Compound(\n" ++ indent (show b) ++ ")"
+  show (ForStmt label forinit cond iter stmt) =
+    "For(\n"
+      ++ indent ("Label: " ++ maybe "None" show label)
+      ++ indent ("Init: " ++ show forinit)
+      ++ ",\n"
+      ++ indent ("Condition: " ++ maybe "None" show cond)
+      ++ ",\n"
+      ++ indent ("Iter: " ++ maybe "None" show iter)
+      ++ ",\n"
+      ++ indent ("Body: " ++ show stmt)
+      ++ "\n)"
+  show (WhileStmt l e s) =
+    "While(\n"
+      ++ indent ("Label: " ++ maybe "None" show l)
+      ++ indent ("Condition: " ++ show e)
+      ++ ",\n"
+      ++ indent ("Body: " ++ show s)
+      ++ "\n)"
+  show (DoWhileStmt l s e) =
+    "DoWhile(\n"
+      ++ indent ("Label: " ++ maybe "None" show l)
+      ++ indent ("Body: " ++ show s)
+      ++ ",\n"
+      ++ indent ("Condition: " ++ show e)
+      ++ "\n)"
+  show (BreakStmt l) = "Break(" ++ maybe "None" show l ++ ")"
+  show (ContinueStmt l) = "Continue(" ++ maybe "None" show l ++ ")"
+  show (SwitchStmt l _ _ e s) =
+    "Switch(\n"
+      ++ indent ("Label: " ++ maybe "None" show l)
+      ++ indent ("Condition: " ++ show e)
+      ++ ",\n"
+      ++ indent ("Body: " ++ show s)
+      ++ "\n)"
+  show (CaseStmt l e s) = "Case(" ++ maybe "None" show l ++ ",  " ++ show e ++ ", " ++ show s ++ ")"
+  show (DefaultStmt l) = "Default(" ++ maybe "None" show l ++ ")"
 
 instance Show Expr where
   show :: Expr -> String

@@ -61,20 +61,44 @@ instance Resolve Block where
     items' <- traverse resolve items
     (ScopeVarMap _ outerScope, num') <- get
     case outerScope of
-      Nothing -> put (ScopeVarMap M.empty Nothing, num')
+      Nothing -> error "Block Resolve: Outer scope should not be Nothing."
       Just scope' -> put (scope', num')
     return $ Block items'
 
 instance Resolve Stmt where
   resolve :: Stmt -> VarResolve Stmt
-  resolve stmt = case stmt of
-    s@(LabelStmt _) -> return s
-    s@(GotoStmt _) -> return s
-    ExprStmt e -> ExprStmt <$> resolve e
-    ReturnStmt e -> ReturnStmt <$> resolve e
-    NullStmt -> return NullStmt
-    IfStmt c t e -> IfStmt <$> resolve c <*> resolve t <*> traverse resolve e
-    CompoundStmt block -> CompoundStmt <$> resolve block
+  resolve (LabeledStmt label stmt) = LabeledStmt label <$> resolve stmt
+  resolve s@(GotoStmt _) = return s
+  resolve (ExprStmt e) = ExprStmt <$> resolve e
+  resolve (ReturnStmt e) = ReturnStmt <$> resolve e
+  resolve NullStmt = return NullStmt
+  resolve (IfStmt c t e) = IfStmt <$> resolve c <*> resolve t <*> traverse resolve e
+  resolve (CompoundStmt block) = CompoundStmt <$> resolve block
+  resolve s@(BreakStmt _) = return s
+  resolve s@(ContinueStmt _) = return s
+  resolve (DoWhileStmt label block e) = DoWhileStmt label <$> resolve block <*> resolve e
+  resolve (WhileStmt label e block) = WhileStmt label <$> resolve e <*> resolve block
+  resolve (ForStmt label forInit cond iter block) = do
+    (scope, num) <- get
+    put (ScopeVarMap M.empty (Just scope), num)
+    forInit' <- resolve forInit
+    cond' <- traverse resolve cond
+    iter' <- traverse resolve iter
+    block' <- resolve block
+    (ScopeVarMap _ outerScope, num') <- get
+    case outerScope of
+      Nothing -> error "For Resolve: Outer scope should not be Nothing."
+      Just scope' -> put (scope', num')
+    return $ ForStmt label forInit' cond' iter' block'
+  resolve (SwitchStmt l s d e stmt) = SwitchStmt l s d <$> resolve e <*> resolve stmt
+  resolve (CaseStmt l e@(Constant (IntLiteral _)) s) = CaseStmt l e <$> resolve s
+  resolve (CaseStmt {}) = lift $ Left "Case statement must have an integer literal."
+  resolve (DefaultStmt l) = return $ DefaultStmt l
+
+instance Resolve ForInit where
+  resolve :: ForInit -> VarResolve ForInit
+  resolve (InitDecl decl) = InitDecl <$> resolve decl
+  resolve (InitExpr e) = InitExpr <$> traverse resolve e
 
 instance Resolve Identifier where
   resolve :: Identifier -> VarResolve Identifier

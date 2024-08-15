@@ -1,6 +1,12 @@
-{-# OPTIONS_GHC -Wno-missing-export-lists #-}
-
-module Lexer where
+module Lexer
+  ( lex,
+    isAssignmentOp,
+    isBinOp,
+    isPostOp,
+    isUnOp,
+    Token (..),
+  )
+where
 
 import Data.Char (isSpace)
 import Data.List (intercalate)
@@ -57,6 +63,14 @@ data Token
   | TQuestionMark
   | TColon
   | TGotoKeyword
+  | TDoKeyword
+  | TWhileKeyword
+  | TForKeyword
+  | TBreakKeyword
+  | TContinueKeyword
+  | TSwitchKeyword
+  | TCaseKeyword
+  | TDefaultKeyword
   deriving (Show, Eq)
 
 keywords :: [String]
@@ -66,7 +80,15 @@ keywords =
     "return",
     "if",
     "else",
-    "goto"
+    "goto",
+    "do",
+    "while",
+    "for",
+    "break",
+    "continue",
+    "switch",
+    "case",
+    "default"
   ]
 
 identifierRegex :: String
@@ -171,7 +193,15 @@ tokenRegexes =
     ("\\A<<=", const TLeftShiftAssignment),
     ("\\A>>=", const TRightShiftAssignment),
     ("\\A\\?", const TQuestionMark),
-    ("\\A:", const TColon)
+    ("\\A:", const TColon),
+    ("\\Ado\\b", const TDoKeyword),
+    ("\\Awhile\\b", const TWhileKeyword),
+    ("\\Afor\\b", const TForKeyword),
+    ("\\Abreak\\b", const TBreakKeyword),
+    ("\\Acontinue\\b", const TContinueKeyword),
+    ("\\Aswitch\\b", const TSwitchKeyword),
+    ("\\Acase\\b", const TCaseKeyword),
+    ("\\Adefault\\b", const TDefaultKeyword)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)
