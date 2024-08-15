@@ -1,5 +1,4 @@
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module VarResolve where
@@ -7,15 +6,26 @@ module VarResolve where
 import AST
 import Control.Applicative ((<|>))
 import Control.Monad.State
-import Data.Functor ((<&>))
 import qualified Data.Map as M
 
 data ScopeVarMap = ScopeVarMap VarMap (Maybe ScopeVarMap) deriving (Eq, Show)
 
-declareVar :: Identifier -> (ScopeVarMap, Int) -> ((ScopeVarMap, Int), Identifier)
-declareVar identifier@(Identifier name) (ScopeVarMap varMap parent, num) = ((ScopeVarMap (M.insert identifier newIdentifier varMap) parent, num + 1), newIdentifier)
-  where
-    newIdentifier = Identifier (name ++ "." ++ show num)
+type VarMap = M.Map Identifier Identifier
+
+type VarResolve a = StateT (ScopeVarMap, Int) (Either String) a
+
+class Resolve a where
+  resolve :: a -> VarResolve a
+
+declareVarT :: Identifier -> VarResolve Identifier
+declareVarT identifier@(Identifier name) = do
+  (scope@(ScopeVarMap varMap parent), num) <- get
+  if isDeclaredInCurrentScope identifier scope
+    then lift $ Left $ "Variable " ++ name ++ " already declared."
+    else do
+      let identifier' = Identifier $ name ++ "." ++ show num
+      put (ScopeVarMap (M.insert identifier identifier' varMap) parent, num + 1)
+      return identifier'
 
 isDeclared :: Identifier -> ScopeVarMap -> Bool
 isDeclared identifier (ScopeVarMap varMap parent) =
@@ -29,47 +39,22 @@ lookupVar identifier (ScopeVarMap varMap parent) =
     Nothing -> Nothing
     Just p -> lookupVar identifier p
 
+lookupT :: Identifier -> VarResolve Identifier
+lookupT identifier = do
+  (scope, _) <- get
+  case lookupVar identifier scope of
+    Just identifier' -> return identifier'
+    Nothing -> lift $ Left $ "Variable " ++ show identifier ++ " not declared."
+
 isDeclaredInCurrentScope :: Identifier -> ScopeVarMap -> Bool
 isDeclaredInCurrentScope identifier (ScopeVarMap varMap _) = M.member identifier varMap
 
-updateVar :: Identifier -> Identifier -> ScopeVarMap -> ScopeVarMap
-updateVar old new current@(ScopeVarMap varMap parent) =
-  if isDeclaredInCurrentScope old current
-    then ScopeVarMap (M.insert old new varMap) parent
-    else ScopeVarMap varMap (fmap (updateVar old new) parent)
-
-type VarMap = M.Map Identifier Identifier
-
-type VarResolve a = State (ScopeVarMap, Int) a
-
-class Resolve a where
-  resolve :: a -> VarResolve (Either String a)
-
--- uniqueNameGenerator :: Identifier -> VarResolve (Maybe Identifier)
--- uniqueNameGenerator identifier@(Identifier name) = do
---   (varMap, num) <- get
---   if M.member identifier varMap
---     then return Nothing
---     else do
---       let newIdentifier = Identifier (name ++ "." ++ show num)
---       put (M.insert identifier newIdentifier varMap, num + 1)
---       return $ Just newIdentifier
-
 instance Resolve Declaration where
-  resolve :: Declaration -> VarResolve (Either String Declaration)
-  resolve (Declaration name expr) = do
-    s <- get
-    if isDeclaredInCurrentScope name (fst s)
-      then pure $ Left $ "Variable " ++ show name ++ " already declared."
-      else do
-        let ((newScope, newNum), newIdentifier) = declareVar name s
-        put (newScope, newNum)
-        case expr of
-          Nothing -> return $ Right $ Declaration newIdentifier Nothing
-          Just expr' -> resolve expr' <&> fmap (Declaration newIdentifier . Just)
+  resolve :: Declaration -> VarResolve Declaration
+  resolve (Declaration name expr) = Declaration <$> declareVarT name <*> traverse resolve expr
 
 instance Resolve Block where
-  resolve :: Block -> VarResolve (Either String Block)
+  resolve :: Block -> VarResolve Block
   resolve (Block items) = do
     (scope, num) <- get
     put (ScopeVarMap M.empty (Just scope), num)
@@ -78,93 +63,55 @@ instance Resolve Block where
     case outerScope of
       Nothing -> put (ScopeVarMap M.empty Nothing, num')
       Just scope' -> put (scope', num')
-    return $ Block <$> sequence items'
+    return $ Block items'
 
 instance Resolve Stmt where
-  resolve :: Stmt -> VarResolve (Either String Stmt)
+  resolve :: Stmt -> VarResolve Stmt
   resolve stmt = case stmt of
-    s@(LabelStmt _) -> pure $ Right s
-    s@(GotoStmt _) -> pure $ Right s
-    ExprStmt e -> resolveHelper ExprStmt e
-    ReturnStmt e -> resolveHelper ReturnStmt e
-    NullStmt -> pure $ Right NullStmt
-    IfStmt c t e -> do
-      c' <- resolve c
-      t' <- resolve t
-      e' <- mapM resolve e
-      return $ IfStmt <$> c' <*> t' <*> sequence e'
-    CompoundStmt block -> do block' <- resolve block; return $ CompoundStmt <$> block'
-    where
-      resolveHelper constr e =
-        resolve e >>= \case
-          Left err -> pure $ Left err
-          Right newExpr -> pure $ Right $ constr newExpr
+    s@(LabelStmt _) -> return s
+    s@(GotoStmt _) -> return s
+    ExprStmt e -> ExprStmt <$> resolve e
+    ReturnStmt e -> ReturnStmt <$> resolve e
+    NullStmt -> return NullStmt
+    IfStmt c t e -> IfStmt <$> resolve c <*> resolve t <*> traverse resolve e
+    CompoundStmt block -> CompoundStmt <$> resolve block
 
 instance Resolve Identifier where
-  resolve :: Identifier -> VarResolve (Either String Identifier)
+  resolve :: Identifier -> VarResolve Identifier
   resolve identifier = do
     (scope, _) <- get
     if isDeclared identifier scope
-      then pure $ Right identifier
-      else pure $ Left $ "Variable " ++ show identifier ++ " not declared."
+      then return identifier
+      else lift $ Left $ "Variable " ++ show identifier ++ " not declared."
 
 instance Resolve Expr where
-  resolve :: Expr -> VarResolve (Either String Expr)
-  resolve (Assignment op l@(Var _) r) = do
-    l' <- resolve l
-    r' <- resolve r
-    return $ Assignment op <$> l' <*> r'
-  resolve (Assignment {}) = return $ Left "Invalid lvalue."
-  resolve (Var identifier) = do
-    (scope, _) <- get
-    case lookupVar identifier scope of
-      Just newIdentifier -> return $ Right $ Var newIdentifier
-      Nothing -> return $ Left $ "Variable " ++ show identifier ++ " not declared."
-  resolve (Unary PreDecrement e@(Var _)) = resolve e <&> (Unary PreDecrement <$>)
-  resolve (Unary PreIncrement e@(Var _)) = resolve e <&> (Unary PreIncrement <$>)
-  resolve (Unary PreDecrement _) = return . Left $ "Invalid pre-decrement expression."
-  resolve (Unary PreIncrement _) = return . Left $ "Invalid pre-increment expression."
-  resolve (Unary op e) = resolve e <&> (Unary op <$>)
-  resolve (Binary op l r) = do
-    l' <- resolve l
-    r' <- resolve r
-    return $ Binary op <$> l' <*> r'
-  resolve (PostFix e@(Var _) op) = do
-    e' <- resolve e
-    return $ PostFix <$> e' <*> pure op
-  resolve (PostFix e _) = return . Left $ "Invalid post-fix expression: " ++ show e
-  resolve (Constant i) = pure $ Right $ Constant i
-  resolve (Conditional c t e) = do
-    c' <- resolve c
-    t' <- resolve t
-    e' <- resolve e
-    return $ Conditional <$> c' <*> t' <*> e'
+  resolve :: Expr -> VarResolve Expr
+  resolve (Assignment op l@(Var _) r) = Assignment op <$> resolve l <*> resolve r
+  resolve (Assignment {}) = lift $ Left "Invalid lvalue."
+  resolve (Var identifier) = Var <$> lookupT identifier
+  resolve (Unary PreDecrement e@(Var _)) = Unary PreDecrement <$> resolve e
+  resolve (Unary PreIncrement e@(Var _)) = Unary PreIncrement <$> resolve e
+  resolve (Unary PreDecrement _) = lift $ Left "Invalid pre-decrement expression."
+  resolve (Unary PreIncrement _) = lift $ Left "Invalid pre-increment expression."
+  resolve (Unary op e) = Unary op <$> resolve e
+  resolve (Binary op l r) = Binary op <$> resolve l <*> resolve r
+  resolve (PostFix e@(Var _) op) = PostFix <$> resolve e <*> pure op
+  resolve (PostFix e _) = lift $ Left $ "Invalid post-fix expression: " ++ show e
+  resolve (Constant i) = return $ Constant i
+  resolve (Conditional c t e) = Conditional <$> resolve c <*> resolve t <*> resolve e
 
 instance Resolve Program where
-  resolve :: Program -> VarResolve (Either String Program)
-  resolve (Program funcs) = do
-    funcs' <- traverse resolve funcs
-    return $ Program <$> sequence funcs'
+  resolve :: Program -> VarResolve Program
+  resolve (Program funcs) = Program <$> traverse resolve funcs
 
 instance Resolve Function where
-  resolve :: Function -> VarResolve (Either String Function)
-  resolve (Function name block) = do block' <- resolve block; return $ Function name <$> block'
+  resolve :: Function -> VarResolve Function
+  resolve (Function name block) = Function name <$> resolve block
 
 instance Resolve BlockItem where
-  resolve :: BlockItem -> VarResolve (Either String BlockItem)
-  resolve blockItem = case blockItem of
-    BlockStmt stmt -> resolveHelper BlockStmt stmt
-    BlockDecl decl -> resolveHelper BlockDecl decl
-    where
-      resolveHelper :: (Resolve a) => (a -> BlockItem) -> a -> VarResolve (Either String BlockItem)
-      resolveHelper constr bi = do
-        blockItem' <- resolve bi
-        return $ constr <$> blockItem'
+  resolve :: BlockItem -> VarResolve BlockItem
+  resolve (BlockStmt stmt) = BlockStmt <$> resolve stmt
+  resolve (BlockDecl decl) = BlockDecl <$> resolve decl
 
 varResolve :: Program -> Either String Program
-varResolve program = evalState (resolve program) (ScopeVarMap M.empty Nothing, 0)
-
-resolveAll :: Program -> Program
-resolveAll program = case evalState (resolve program) (ScopeVarMap M.empty Nothing, 0) of
-  Left err -> error err
-  Right program' -> program'
+varResolve program = evalStateT (resolve program) (ScopeVarMap M.empty Nothing, 0)
