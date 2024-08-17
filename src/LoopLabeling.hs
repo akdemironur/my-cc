@@ -54,9 +54,9 @@ instance LoopLabelingPass Program where
   labelLoops :: Program -> LoopLabelingT Program
   labelLoops (Program functions) = Program <$> traverse labelLoops functions
 
-instance LoopLabelingPass Function where
-  labelLoops :: Function -> LoopLabelingT Function
-  labelLoops (Function name block) = Function name <$> labelLoops block
+instance LoopLabelingPass FuncDecl where
+  labelLoops :: FuncDecl -> LoopLabelingT FuncDecl
+  labelLoops (FuncDecl name args block) = FuncDecl name args <$> traverse labelLoops block
 
 instance LoopLabelingPass Block where
   labelLoops :: Block -> LoopLabelingT Block

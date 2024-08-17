@@ -2,9 +2,6 @@
 
 module AST
   ( Program (..),
-    Function (..),
-    Type (..),
-    Parameter (..),
     IntLiteral (..),
     Identifier (..),
     ForInit (..),
@@ -14,35 +11,28 @@ module AST
     UnaryOp (..),
     PostOp (..),
     Operator (..),
-    Declaration (..),
+    VarDecl (..),
     Block (..),
     BlockItem (..),
     ConditionalOp (..),
     BinaryOp (..),
     OpPrecedence (..),
+    FuncDecl (..),
+    Decl (..),
   )
 where
 
 import qualified Data.Set as S
 import Lexer ()
 
-newtype Program = Program [Function] deriving (Eq)
-
-data Function = Function Identifier Block deriving (Eq)
-
-data Type
-  = IntType
-  | VoidType
-  deriving (Eq)
-
-data Parameter = Parameter Type Identifier deriving (Eq)
+newtype Program = Program [FuncDecl] deriving (Eq)
 
 newtype IntLiteral = IntLiteral Int deriving (Eq, Ord)
 
 newtype Identifier = Identifier String deriving (Eq, Ord)
 
 data ForInit
-  = InitDecl Declaration
+  = InitDecl VarDecl
   | InitExpr (Maybe Expr)
   deriving (Eq)
 
@@ -72,6 +62,7 @@ data Expr
   | Binary BinaryOp Expr Expr
   | Assignment AssignmentOp Expr Expr
   | Conditional Expr Expr Expr
+  | FunctionCall Identifier [Expr]
   deriving (Eq)
 
 data AssignmentOp
@@ -109,13 +100,17 @@ data Operator
   | C ConditionalOp
   deriving (Eq)
 
-data Declaration = Declaration Identifier (Maybe Expr) deriving (Eq)
+data VarDecl = VarDecl Identifier (Maybe Expr) deriving (Eq)
+
+data FuncDecl = FuncDecl Identifier [Identifier] (Maybe Block) deriving (Eq)
+
+data Decl = VDecl VarDecl | FDecl FuncDecl deriving (Eq)
 
 newtype Block = Block [BlockItem] deriving (Eq)
 
 data BlockItem
   = BlockStmt Stmt
-  | BlockDecl Declaration
+  | BlockDecl Decl
   deriving (Eq)
 
 data ConditionalOp
@@ -207,11 +202,31 @@ instance Show BlockItem where
   show (BlockStmt stmt) = show stmt
   show (BlockDecl decl) = show decl
 
-instance Show Declaration where
-  show :: Declaration -> String
-  show (Declaration name Nothing) = "Declaration(\n" ++ indent ("name: " ++ show name) ++ "\n)"
-  show (Declaration name (Just expr)) =
-    "Declaration(\n"
+instance Show Decl where
+  show :: Decl -> String
+  show (VDecl decl) = show decl
+  show (FDecl decl) = show decl
+
+instance Show FuncDecl where
+  show :: FuncDecl -> String
+  show (FuncDecl name params block) =
+    "FuncDecl(\n"
+      ++ "  name: "
+      ++ show name
+      ++ ",\n"
+      ++ "  parameters: "
+      ++ show params
+      ++ ",\n"
+      ++ "  body: "
+      ++ indent (maybe "None" show block)
+      ++ "\n"
+      ++ ")"
+
+instance Show VarDecl where
+  show :: VarDecl -> String
+  show (VarDecl name Nothing) = "VarDecl(\n" ++ indent ("name: " ++ show name) ++ "\n)"
+  show (VarDecl name (Just expr)) =
+    "VarDecl(\n"
       ++ "  name: "
       ++ show name
       ++ ",\n"
@@ -220,38 +235,9 @@ instance Show Declaration where
       ++ "\n"
       ++ ")"
 
-instance Show Function where
-  show :: Function -> String
-  show (Function name block) =
-    "Function(\n"
-      ++ "  name: "
-      ++ show name
-      ++ ",\n"
-      ++ "  body: "
-      ++ indent (show block)
-      ++ "\n"
-      ++ ")"
-
 instance Show Block where
   show :: Block -> String
   show (Block items) = "Block(\n" ++ indent (unlines (map show items)) ++ ")"
-
-instance Show Type where
-  show :: Type -> String
-  show IntType = "Int"
-  show VoidType = "Void"
-
-instance Show Parameter where
-  show :: Parameter -> String
-  show (Parameter t name) =
-    "Parameter(\n"
-      ++ "  type: "
-      ++ show t
-      ++ ",\n"
-      ++ "  name: "
-      ++ show name
-      ++ "\n"
-      ++ ")"
 
 instance Show IntLiteral where
   show :: IntLiteral -> String
@@ -374,6 +360,7 @@ instance Show Expr where
       ++ indent (show e3)
       ++ "\n"
       ++ ")"
+  show (FunctionCall i es) = "FunctionCall(" ++ show i ++ ", " ++ show es ++ ")"
 
 instance Show UnaryOp where
   show :: UnaryOp -> String

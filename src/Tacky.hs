@@ -17,12 +17,13 @@ import AST
 import Control.Monad.State
 import Data.Foldable
 import qualified Data.Map as M
+import Data.Maybe (isJust)
 
 type TACIdentifier = String
 
 newtype TACProgram = TACProgram [TACFunction] deriving (Show, Eq)
 
-data TACFunction = TACFunction TACIdentifier [TACInstruction] deriving (Show, Eq)
+data TACFunction = TACFunction TACIdentifier [TACVal] [TACInstruction] deriving (Show, Eq)
 
 breakLabel :: Maybe Identifier -> String
 breakLabel (Just (Identifier name)) = name ++ ".break"
@@ -45,6 +46,7 @@ data TACInstruction
   | TACJumpIfZero TACVal TACIdentifier
   | TACJumpIfNotZero TACVal TACIdentifier
   | TACLabel TACIdentifier
+  | TACFuncCall TACIdentifier [TACVal] TACVal
   deriving (Eq)
 
 instance Show TACInstruction where
@@ -57,6 +59,7 @@ instance Show TACInstruction where
   show (TACJumpIfZero val label) = "JumpIfZero(" ++ show val ++ ", " ++ label ++ ")"
   show (TACJumpIfNotZero val label) = "JumpIfNotZero(" ++ show val ++ ", " ++ label ++ ")"
   show (TACLabel label) = "Label(" ++ label ++ ")"
+  show (TACFuncCall name args dst) = "FuncCall(" ++ name ++ ", " ++ show args ++ ", " ++ show dst ++ ")"
 
 data TACVal
   = TACConstant Int
@@ -278,15 +281,21 @@ instance Emittable Expr where
     (num'', instr'') <- get
     put (num'', instr'' ++ [TACCopy else_val (TACVar dst_name), TACLabel end_label])
     return $ TACVar dst_name
+  emitTacky (FunctionCall (Identifier name) args) = do
+    arg_vals <- traverse emitTacky args
+    dst_name <- globalNameGenerator "tmp."
+    (num, instr) <- get
+    put (num, instr ++ [TACFuncCall name arg_vals (TACVar dst_name)])
+    return $ TACVar dst_name
 
-instance Emittable Declaration where
-  emitTacky :: Declaration -> InstrSt TACVal
-  emitTacky (Declaration (Identifier name) (Just e)) = do
+instance Emittable VarDecl where
+  emitTacky :: VarDecl -> InstrSt TACVal
+  emitTacky (VarDecl (Identifier name) (Just e)) = do
     val <- emitTacky e
     (num, instr) <- get
     put (num, instr ++ [TACCopy val (TACVar name)])
     return val
-  emitTacky (Declaration (Identifier name) Nothing) = return $ TACVar name
+  emitTacky (VarDecl (Identifier name) Nothing) = return $ TACVar name
 
 instance Emittable Stmt where
   emitTacky :: Stmt -> InstrSt TACVal
@@ -451,11 +460,30 @@ instance Emittable Block where
   emitTacky :: Block -> InstrSt TACVal
   emitTacky (Block items) = traverse_ emitTacky items >> return (TACConstant 0)
 
-toTACFunc :: Function -> TACFunction
-toTACFunc (Function (Identifier name) block) = TACFunction name (snd (execState (emitTacky block) (M.empty, [])) ++ [TACReturn (TACConstant 0)])
+instance Emittable Decl where
+  emitTacky :: Decl -> InstrSt TACVal
+  emitTacky (VDecl decl) = emitTacky decl
+  emitTacky (FDecl decl) = emitTacky decl
+
+instance Emittable FuncDecl where
+  emitTacky :: FuncDecl -> InstrSt TACVal
+  emitTacky _ = return $ TACConstant 0
+
+toTACFunc :: GlobalNameMap -> FuncDecl -> (GlobalNameMap, TACFunction)
+toTACFunc globalMap (FuncDecl (Identifier name) args (Just block)) = (newMap, TACFunction name tacArgs (instrs ++ [TACReturn $ TACConstant 0]))
+  where
+    (newMap, instrs) = execState (emitTacky block) (globalMap, [])
+    tacArgs = fmap (\(Identifier arg) -> TACVar arg) args
+toTACFunc _ _ = error "FuncDecl without body, this shouldnt happen"
 
 toTACProg :: Program -> TACProgram
-toTACProg (Program functions) = TACProgram (fmap toTACFunc functions)
+toTACProg (Program fs) = TACProgram $ tac_functions M.empty functions_with_body []
+  where
+    functions_with_body = filter (\(FuncDecl _ _ body) -> isJust body) fs
+    tac_functions _ [] acc = acc
+    tac_functions gm (f : f') acc = tac_functions newMap f' (tac_f : acc)
+      where
+        (newMap, tac_f) = toTACFunc gm f
 
 isRelationalOp :: TACBinaryOp -> Bool
 isRelationalOp TACEqual = True

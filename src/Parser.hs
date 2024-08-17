@@ -4,7 +4,7 @@
 
 {-# HLINT ignore "Use lambda-case" #-}
 
-module Parser (parse) where
+module Parser where
 
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, (<|>))
@@ -139,12 +139,12 @@ tokenToPostOp t = error $ "Invalid post operator: " ++ show t
 parseIdentifier :: Parser Identifier
 parseIdentifier = Parser $ \tokens -> case tokens of
   (TIdentifier s : ts) -> Right (Identifier s, ts)
-  _ -> Left "Invalid identifier"
+  _ -> Left $ "Expected identifier, got: " ++ show (take 10 tokens)
 
 parseIntLiteral :: Parser IntLiteral
 parseIntLiteral = Parser $ \tokens -> case tokens of
   (TConstant i : ts) -> Right (IntLiteral i, ts)
-  _ -> Left "Invalid integer literal"
+  _ -> Left $ "Expected integer literal, got: " ++ show (take 10 tokens)
 
 -- parseType :: Parser Type
 -- parseType = Parser $ \tokens -> case tokens of
@@ -155,13 +155,13 @@ parseIntLiteral = Parser $ \tokens -> case tokens of
 -- parseParameter :: Parser Parameter
 -- parseParameter = Parameter <$> parseType <*> parseIdentifier
 
-parseDeclaration :: Parser Declaration
-parseDeclaration = do
+parseVarDecl :: Parser VarDecl
+parseVarDecl = do
   parseToken TIntKeyword
   name <- parseIdentifier
   expr <- optional (parseToken TAssignment *> parseExpr)
   parseToken TSemicolon
-  return (Declaration name expr)
+  return (VarDecl name expr)
 
 parseUExpr :: Parser Expr
 parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr
@@ -177,11 +177,15 @@ parsePExpr = do
 parsePrimaryExpr :: Parser Expr
 parsePrimaryExpr =
   Constant <$> parseIntLiteral
+    <|> parseFunctionCall
     <|> Var <$> parseIdentifier
     <|> (parseToken TOpenParen *> parseExpr <* parseToken TCloseParen)
 
 parseExpr :: Parser Expr
 parseExpr = parseExprPrec 0
+
+parseFunctionCall :: Parser Expr
+parseFunctionCall = FunctionCall <$> parseIdentifier <*> parseArguments
 
 parseExprPrec :: Int -> Parser Expr
 parseExprPrec minPrec = parseBAExpr minPrec <|> parseUExpr
@@ -237,7 +241,7 @@ parseForInit = parseForInitDecl <|> parseForInitExpr
     parseForInitDecl :: Parser ForInit
     parseForInitDecl =
       InitDecl
-        <$> parseDeclaration
+        <$> parseVarDecl
     parseForInitExpr :: Parser ForInit
     parseForInitExpr =
       InitExpr
@@ -337,7 +341,10 @@ parseIfStmt = do
 parseBlockItem :: Parser BlockItem
 parseBlockItem =
   BlockStmt <$> parseStmt
-    <|> BlockDecl <$> parseDeclaration
+    <|> BlockDecl <$> parseDecl
+
+parseDecl :: Parser Decl
+parseDecl = FDecl <$> parseFunction <|> VDecl <$> parseVarDecl
 
 parseBlock :: Parser Block
 parseBlock = do
@@ -346,19 +353,59 @@ parseBlock = do
   parseToken TCloseBrace
   return (Block items)
 
-parseFunction :: Parser Function
-parseFunction = do
+parseFunctionJustDecl :: Parser FuncDecl
+parseFunctionJustDecl = do
   parseToken TIntKeyword
   name <- parseIdentifier
+  params <- parseParameters
+  parseToken TSemicolon
+  return (FuncDecl name params Nothing)
+
+parseFunctionWithBody :: Parser FuncDecl
+parseFunctionWithBody = do
+  parseToken TIntKeyword
+  name <- parseIdentifier
+  params <- parseParameters
+  FuncDecl name params . Just <$> parseBlock
+
+parseFunction :: Parser FuncDecl
+parseFunction = parseFunctionJustDecl <|> parseFunctionWithBody
+
+parseVoidParameter :: Parser [Identifier]
+parseVoidParameter = do
   parseToken TOpenParen
   parseToken TVoidKeyword
   parseToken TCloseParen
-  Function name <$> parseBlock
+  return []
+
+parseParameterList :: Parser [Identifier]
+parseParameterList = do
+  parseToken TOpenParen
+  first_param <- parseToken TIntKeyword *> parseIdentifier
+  rest_params <- many (parseToken TComma *> (parseToken TIntKeyword *> parseIdentifier))
+  parseToken TCloseParen
+  return (first_param : rest_params)
+
+parseParameters :: Parser [Identifier]
+parseParameters = parseVoidParameter <|> parseParameterList
+
+parseArguments :: Parser [Expr]
+parseArguments = do
+  parseToken TOpenParen
+  first_arg <- optional parseExpr
+  case first_arg of
+    Nothing -> do
+      parseToken TCloseParen
+      return []
+    Just arg -> do
+      rest_args <- many (parseToken TComma *> parseExpr)
+      parseToken TCloseParen
+      return (arg : rest_args)
 
 parseProgram :: Parser Program
 parseProgram = do
-  function <- parseFunction
-  return (Program [function])
+  function <- many parseFunction
+  return (Program function)
 
 parse :: [Token] -> Program
 parse tokens = case runParser parseProgram tokens of

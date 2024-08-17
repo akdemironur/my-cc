@@ -22,10 +22,6 @@ instance CaseResolve Program where
   resolve :: Program -> CaseResolveT Program
   resolve (Program functions) = Program <$> traverse resolve functions
 
-instance CaseResolve Function where
-  resolve :: Function -> CaseResolveT Function
-  resolve (Function name block) = Function name <$> resolve block
-
 instance CaseResolve Block where
   resolve :: Block -> CaseResolveT Block
   resolve (Block items) = Block <$> traverse resolve items
@@ -35,9 +31,18 @@ instance CaseResolve BlockItem where
   resolve (BlockStmt stmt) = BlockStmt <$> resolve stmt
   resolve (BlockDecl decl) = BlockDecl <$> resolve decl
 
-instance CaseResolve Declaration where
-  resolve :: Declaration -> CaseResolveT Declaration
+instance CaseResolve VarDecl where
+  resolve :: VarDecl -> CaseResolveT VarDecl
   resolve = pure
+
+instance CaseResolve FuncDecl where
+  resolve :: FuncDecl -> CaseResolveT FuncDecl
+  resolve (FuncDecl name args block) = FuncDecl name args <$> traverse resolve block
+
+instance CaseResolve Decl where
+  resolve :: Decl -> CaseResolveT Decl
+  resolve (VDecl decl) = VDecl <$> resolve decl
+  resolve (FDecl decl) = FDecl <$> resolve decl
 
 instance CaseResolve Stmt where
   resolve :: Stmt -> CaseResolveT Stmt

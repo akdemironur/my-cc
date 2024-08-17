@@ -24,6 +24,7 @@ library
       Parser
       Pass
       Tacky
+      TypeCheck
       VarResolve
   other-modules:
       Paths_my_cc

@@ -71,6 +71,7 @@ data Token
   | TSwitchKeyword
   | TCaseKeyword
   | TDefaultKeyword
+  | TComma
   deriving (Show, Eq)
 
 keywords :: [String]
@@ -201,7 +202,8 @@ tokenRegexes =
     ("\\Acontinue\\b", const TContinueKeyword),
     ("\\Aswitch\\b", const TSwitchKeyword),
     ("\\Acase\\b", const TCaseKeyword),
-    ("\\Adefault\\b", const TDefaultKeyword)
+    ("\\Adefault\\b", const TDefaultKeyword),
+    ("\\A,", const TComma)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)
