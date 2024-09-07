@@ -22,13 +22,18 @@ instance LabelResolve Program where
   labelResolve :: Program -> Either String Program
   labelResolve (Program decls) = Program <$> traverse labelResolve decls
 
+instance LabelResolve Decl where
+  labelResolve :: Decl -> Either String Decl
+  labelResolve (VDecl decl) = return $ VDecl decl
+  labelResolve (FDecl decl) = FDecl <$> labelResolve decl
+
 instance LabelResolve FuncDecl where
   labelResolve :: FuncDecl -> Either String FuncDecl
-  labelResolve (FuncDecl name@(Identifier fname) args block) = do
+  labelResolve (FuncDecl name@(Identifier fname) args block sc) = do
     let p = evalStateT (traverse (resolveP1 fname) block >>= traverse resolveP2) S.empty
     case p of
       Left err -> Left err
-      Right p' -> return $ FuncDecl name args p'
+      Right p' -> return $ FuncDecl name args p' sc
 
 class LabelResolvePass1 a where
   resolveP1 :: String -> a -> LabelStateT a
@@ -73,9 +78,14 @@ instance LabelResolvePass2 Program where
   resolveP2 :: Program -> LabelStateT Program
   resolveP2 (Program decls) = fmap Program (traverse resolveP2 decls)
 
+instance LabelResolvePass2 Decl where
+  resolveP2 :: Decl -> LabelStateT Decl
+  resolveP2 (VDecl decl) = return (VDecl decl)
+  resolveP2 (FDecl decl) = fmap FDecl (resolveP2 decl)
+
 instance LabelResolvePass2 FuncDecl where
   resolveP2 :: FuncDecl -> LabelStateT FuncDecl
-  resolveP2 (FuncDecl name args block) = FuncDecl name args <$> traverse resolveP2 block
+  resolveP2 (FuncDecl name args block sc) = FuncDecl name args <$> traverse resolveP2 block <*> return sc
 
 instance LabelResolvePass2 Block where
   resolveP2 :: Block -> LabelStateT Block

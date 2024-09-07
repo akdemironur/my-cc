@@ -1,4 +1,4 @@
-module Pass (resolveAll) where
+module Pass where
 
 import AST (Program)
 import CaseResolve
@@ -7,7 +7,7 @@ import LoopLabeling
 import TypeCheck
 import VarResolve
 
-resolveAll :: Program -> Program
+resolveAll :: Program -> (Program, SymbolTable)
 resolveAll program = case varResolve program
   >>= labelResolve
   >>= loopLabeling

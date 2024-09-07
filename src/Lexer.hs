@@ -4,6 +4,7 @@ module Lexer
     isBinOp,
     isPostOp,
     isUnOp,
+    isSpecifier,
     Token (..),
   )
 where
@@ -72,6 +73,8 @@ data Token
   | TCaseKeyword
   | TDefaultKeyword
   | TComma
+  | TExternKeyword
+  | TStaticKeyword
   deriving (Show, Eq)
 
 keywords :: [String]
@@ -89,7 +92,9 @@ keywords =
     "continue",
     "switch",
     "case",
-    "default"
+    "default",
+    "extern",
+    "static"
   ]
 
 identifierRegex :: String
@@ -144,6 +149,12 @@ isAssignmentOp TBitwiseXorAssignment = True
 isAssignmentOp TLeftShiftAssignment = True
 isAssignmentOp TRightShiftAssignment = True
 isAssignmentOp _ = False
+
+isSpecifier :: Token -> Bool
+isSpecifier TIntKeyword = True
+isSpecifier TStaticKeyword = True
+isSpecifier TExternKeyword = True
+isSpecifier _ = False
 
 tokenRegexes :: [TokenRegex]
 tokenRegexes =
@@ -203,7 +214,9 @@ tokenRegexes =
     ("\\Aswitch\\b", const TSwitchKeyword),
     ("\\Acase\\b", const TCaseKeyword),
     ("\\Adefault\\b", const TDefaultKeyword),
-    ("\\A,", const TComma)
+    ("\\A,", const TComma),
+    ("\\Aextern\\b", const TExternKeyword),
+    ("\\Astatic\\b", const TStaticKeyword)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)

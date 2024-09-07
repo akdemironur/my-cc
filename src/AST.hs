@@ -1,31 +1,11 @@
 {-# LANGUAGE InstanceSigs #-}
 
-module AST
-  ( Program (..),
-    IntLiteral (..),
-    Identifier (..),
-    ForInit (..),
-    Stmt (..),
-    Expr (..),
-    AssignmentOp (..),
-    UnaryOp (..),
-    PostOp (..),
-    Operator (..),
-    VarDecl (..),
-    Block (..),
-    BlockItem (..),
-    ConditionalOp (..),
-    BinaryOp (..),
-    OpPrecedence (..),
-    FuncDecl (..),
-    Decl (..),
-  )
-where
+module AST where
 
 import qualified Data.Set as S
-import Lexer ()
+import Lexer
 
-newtype Program = Program [FuncDecl] deriving (Eq)
+newtype Program = Program [Decl] deriving (Eq)
 
 newtype IntLiteral = IntLiteral Int deriving (Eq, Ord)
 
@@ -100,11 +80,13 @@ data Operator
   | C ConditionalOp
   deriving (Eq)
 
-data VarDecl = VarDecl Identifier (Maybe Expr) deriving (Eq)
+data VarDecl = VarDecl Identifier (Maybe Expr) (Maybe StorageClass) deriving (Eq)
 
-data FuncDecl = FuncDecl Identifier [Identifier] (Maybe Block) deriving (Eq)
+data FuncDecl = FuncDecl Identifier [Identifier] (Maybe Block) (Maybe StorageClass) deriving (Eq)
 
 data Decl = VDecl VarDecl | FDecl FuncDecl deriving (Eq)
+
+data StorageClass = Static | Extern deriving (Show, Eq)
 
 newtype Block = Block [BlockItem] deriving (Eq)
 
@@ -209,29 +191,34 @@ instance Show Decl where
 
 instance Show FuncDecl where
   show :: FuncDecl -> String
-  show (FuncDecl name params block) =
+  show (FuncDecl name params block storage) =
     "FuncDecl(\n"
       ++ "  name: "
       ++ show name
       ++ ",\n"
-      ++ "  parameters: "
+      ++ "  params: "
       ++ show params
       ++ ",\n"
-      ++ "  body: "
+      ++ "  block: "
       ++ indent (maybe "None" show block)
+      ++ ",\n"
+      ++ "  storage: "
+      ++ show storage
       ++ "\n"
       ++ ")"
 
 instance Show VarDecl where
   show :: VarDecl -> String
-  show (VarDecl name Nothing) = "VarDecl(\n" ++ indent ("name: " ++ show name) ++ "\n)"
-  show (VarDecl name (Just expr)) =
+  show (VarDecl name expr storage) =
     "VarDecl(\n"
       ++ "  name: "
       ++ show name
       ++ ",\n"
       ++ "  expression: "
-      ++ indent (show expr)
+      ++ indent (maybe "None" show expr)
+      ++ ",\n"
+      ++ "  storage: "
+      ++ show storage
       ++ "\n"
       ++ ")"
 

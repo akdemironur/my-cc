@@ -18,15 +18,19 @@ type VarResolve a = StateT (ScopeVarMap, Int) (Either String) a
 class Resolve a where
   resolve :: a -> VarResolve a
 
-declareVarT :: Identifier -> VarResolve Identifier
-declareVarT identifier@(Identifier name) = do
+declareVarT :: Maybe StorageClass -> Identifier -> VarResolve Identifier
+declareVarT sc identifier@(Identifier name) = do
   (scope@(ScopeVarMap varMap parent), num) <- get
-  if isDeclaredInCurrentScope identifier scope
-    then lift $ Left $ "Variable " ++ name ++ " already declared."
-    else do
-      let identifier' = Identifier $ name ++ "." ++ show num
-      put (ScopeVarMap (M.insert identifier (identifier', False) varMap) parent, num + 1)
-      return identifier'
+  let oldDecl = lookupVarLink identifier scope
+  let inCurrentScope = isDeclaredInCurrentScope identifier scope
+  case (inCurrentScope, oldDecl, sc) of
+    (True, Just (_, _), Nothing) -> lift . Left $ "Variable " ++ name ++ " already declared."
+    (True, Just (_, False), _) -> lift . Left $ "Conflicting linkage for variable: " ++ name
+    (True, Just _, Just Static) -> lift . Left $ "Conflicting linkage for variable: " ++ name
+    _ -> return ()
+  let identifier' = Identifier $ name ++ "." ++ show num
+  put (ScopeVarMap (M.insert identifier (identifier', sc == Just Extern) varMap) parent, num + 1)
+  return identifier'
 
 declareFunT :: Identifier -> VarResolve Identifier
 declareFunT identifier@(Identifier name) = do
@@ -60,9 +64,25 @@ lookupT identifier = do
 isDeclaredInCurrentScope :: Identifier -> ScopeVarMap -> Bool
 isDeclaredInCurrentScope identifier (ScopeVarMap varMap _) = M.member identifier varMap
 
+declareVarTFileScope :: Identifier -> VarResolve Identifier
+declareVarTFileScope identifier = do
+  (ScopeVarMap varMap parent, num) <- get
+  put (ScopeVarMap (M.insert identifier (identifier, True) varMap) parent, num)
+  return identifier
+
 instance Resolve VarDecl where
   resolve :: VarDecl -> VarResolve VarDecl
-  resolve (VarDecl name expr) = VarDecl <$> declareVarT name <*> traverse resolve expr
+  resolve (VarDecl name expr sc) = do
+    (scope@(ScopeVarMap _ outerScope), _) <- get
+    case outerScope of
+      Nothing -> VarDecl <$> declareVarTFileScope name <*> traverse resolve expr <*> pure sc
+      Just _ -> do
+        case (lookupVarLink name scope, isDeclaredInCurrentScope name scope, sc) of
+          (Just (_, False), True, _) -> lift $ Left $ "Conflicting local variable declaration: " ++ show name
+          _ -> return ()
+        if sc == Just Extern
+          then VarDecl <$> declareVarTFileScope name <*> traverse resolve expr <*> pure sc
+          else VarDecl <$> declareVarT sc name <*> traverse resolve expr <*> pure sc
 
 restoreOuterScope :: VarResolve ()
 restoreOuterScope = do
@@ -73,21 +93,22 @@ restoreOuterScope = do
 
 instance Resolve FuncDecl where
   resolve :: FuncDecl -> VarResolve FuncDecl
-  resolve (FuncDecl name args block) = do
+  resolve (FuncDecl name args block sc) = do
     (ScopeVarMap _ outerScope, _) <- get
     when (isJust outerScope && isJust block) $ lift $ Left "Nested function definition not allowed."
+    when (isJust outerScope && sc == Just Static) $ lift $ Left "Static function definition not allowed in block scope."
     name' <- declareFunT name
     (scope, num) <- get
     put (ScopeVarMap M.empty (Just scope), num)
-    args' <- traverse declareVarT args
+    args' <- traverse (declareVarT Nothing) args
     case block of
       Nothing -> do
         restoreOuterScope
-        return $ FuncDecl name' args' Nothing
+        return $ FuncDecl name' args' Nothing sc
       Just (Block items) -> do
         items' <- traverse resolve items
         restoreOuterScope
-        return $ FuncDecl name' args' (Just (Block items'))
+        return $ FuncDecl name' args' (Just (Block items')) sc
 
 instance Resolve Block where
   resolve :: Block -> VarResolve Block
@@ -130,16 +151,9 @@ instance Resolve Stmt where
 
 instance Resolve ForInit where
   resolve :: ForInit -> VarResolve ForInit
-  resolve (InitDecl decl) = InitDecl <$> resolve decl
+  resolve (InitDecl decl@(VarDecl _ _ Nothing)) = InitDecl <$> resolve decl
+  resolve (InitDecl _) = lift $ Left "for loop initializer cannot have storage class."
   resolve (InitExpr e) = InitExpr <$> traverse resolve e
-
--- instance Resolve Identifier where
---   resolve :: Identifier -> VarResolve Identifier
---   resolve identifier = do
---     (scope, _) <- get
---     if isDeclared identifier scope
---       then return identifier
---       else lift $ Left $ "Variable " ++ show identifier ++ " not declared."
 
 instance Resolve Expr where
   resolve :: Expr -> VarResolve Expr

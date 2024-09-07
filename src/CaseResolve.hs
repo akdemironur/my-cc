@@ -37,7 +37,7 @@ instance CaseResolve VarDecl where
 
 instance CaseResolve FuncDecl where
   resolve :: FuncDecl -> CaseResolveT FuncDecl
-  resolve (FuncDecl name args block) = FuncDecl name args <$> traverse resolve block
+  resolve (FuncDecl name args block sc) = FuncDecl name args <$> traverse resolve block <*> pure sc
 
 instance CaseResolve Decl where
   resolve :: Decl -> CaseResolveT Decl

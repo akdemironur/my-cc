@@ -1,29 +1,22 @@
 {-# LANGUAGE InstanceSigs #-}
 
-module Tacky
-  ( TACProgram (..),
-    TACFunction (..),
-    TACInstruction (..),
-    TACVal (..),
-    TACUnaryOp (..),
-    TACBinaryOp (..),
-    TACIdentifier,
-    isRelationalOp,
-    toTACProg,
-  )
-where
+module Tacky where
 
 import AST
 import Control.Monad.State
 import Data.Foldable
 import qualified Data.Map as M
-import Data.Maybe (isJust)
+import Pass
+import TypeCheck
 
 type TACIdentifier = String
 
-newtype TACProgram = TACProgram [TACFunction] deriving (Show, Eq)
+newtype TACProgram = TACProgram [TACTopLevel] deriving (Show, Eq)
 
-data TACFunction = TACFunction TACIdentifier [TACVal] [TACInstruction] deriving (Show, Eq)
+data TACTopLevel
+  = TACFunction TACIdentifier Bool [TACIdentifier] [TACInstruction]
+  | TACStaticVariable TACIdentifier Bool Int
+  deriving (Show, Eq)
 
 breakLabel :: Maybe Identifier -> String
 breakLabel (Just (Identifier name)) = name ++ ".break"
@@ -63,7 +56,7 @@ instance Show TACInstruction where
 
 data TACVal
   = TACConstant Int
-  | TACVar String
+  | TACVar TACIdentifier
   deriving (Eq)
 
 instance Show TACVal where
@@ -290,12 +283,13 @@ instance Emittable Expr where
 
 instance Emittable VarDecl where
   emitTacky :: VarDecl -> InstrSt TACVal
-  emitTacky (VarDecl (Identifier name) (Just e)) = do
+  emitTacky (VarDecl (Identifier name) _ (Just Static)) = return $ TACVar name
+  emitTacky (VarDecl (Identifier name) (Just e) _) = do
     val <- emitTacky e
     (num, instr) <- get
     put (num, instr ++ [TACCopy val (TACVar name)])
     return val
-  emitTacky (VarDecl (Identifier name) Nothing) = return $ TACVar name
+  emitTacky (VarDecl (Identifier name) Nothing _) = return $ TACVar name
 
 instance Emittable Stmt where
   emitTacky :: Stmt -> InstrSt TACVal
@@ -469,21 +463,29 @@ instance Emittable FuncDecl where
   emitTacky :: FuncDecl -> InstrSt TACVal
   emitTacky _ = return $ TACConstant 0
 
-toTACFunc :: GlobalNameMap -> FuncDecl -> (GlobalNameMap, TACFunction)
-toTACFunc globalMap (FuncDecl (Identifier name) args (Just block)) = (newMap, TACFunction name tacArgs (instrs ++ [TACReturn $ TACConstant 0]))
+toTACFunc :: SymbolTable -> GlobalNameMap -> FuncDecl -> (GlobalNameMap, TACTopLevel)
+toTACFunc st globalMap (FuncDecl (Identifier name) args (Just block) _) = (newMap, TACFunction name functionGlobal tacArgs (instrs ++ [TACReturn $ TACConstant 0]))
   where
     (newMap, instrs) = execState (emitTacky block) (globalMap, [])
-    tacArgs = fmap (\(Identifier arg) -> TACVar arg) args
-toTACFunc _ _ = error "FuncDecl without body, this shouldnt happen"
+    tacArgs = fmap (\(Identifier arg) -> arg) args
+    functionSymbol = M.lookup (Identifier name) st
+    functionGlobal = case functionSymbol of
+      Just (_, FuncAttr _ global) -> global
+      _ -> error "Function without symbol, this shouldnt happen"
+toTACFunc _ _ _ = error "FuncDecl without body, this shouldnt happen"
 
-toTACProg :: Program -> TACProgram
-toTACProg (Program fs) = TACProgram $ tac_functions M.empty functions_with_body []
+toTACProg :: (Program, SymbolTable) -> (TACProgram, SymbolTable)
+toTACProg (Program fs, st) = (TACProgram $ tac_functions M.empty functions_with_body staticVariables, st)
   where
-    functions_with_body = filter (\(FuncDecl _ _ body) -> isJust body) fs
+    staticVariables = symbolsToTacky st
+    functions_with_body = fmap (\(FDecl decl) -> decl) (filter isFDWithBody fs)
+    isFDWithBody :: Decl -> Bool
+    isFDWithBody (FDecl (FuncDecl _ _ (Just _) _)) = True
+    isFDWithBody _ = False
     tac_functions _ [] acc = acc
-    tac_functions gm (f : f') acc = tac_functions newMap f' (tac_f : acc)
+    tac_functions gm (f : f') acc = tac_functions newMap f' (acc ++ [tac_f])
       where
-        (newMap, tac_f) = toTACFunc gm f
+        (newMap, tac_f) = toTACFunc st gm f
 
 isRelationalOp :: TACBinaryOp -> Bool
 isRelationalOp TACEqual = True
@@ -493,3 +495,14 @@ isRelationalOp TACLessThanOrEqual = True
 isRelationalOp TACGreaterThan = True
 isRelationalOp TACGreaterThanOrEqual = True
 isRelationalOp _ = False
+
+symbolsToTacky :: SymbolTable -> [TACTopLevel]
+symbolsToTacky st = fmap convert stList
+  where
+    stList = filter filterStatic (M.toList st)
+    filterStatic (_, (_, StaticAttr (Initial _) _)) = True
+    filterStatic (_, (_, StaticAttr Tentative _)) = True
+    filterStatic _ = False
+    convert (Identifier name, (_, StaticAttr (Initial i) global)) = TACStaticVariable name global i
+    convert (Identifier name, (_, StaticAttr Tentative global)) = TACStaticVariable name global 0
+    convert _ = error "This shouldnt happen"

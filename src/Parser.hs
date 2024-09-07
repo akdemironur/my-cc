@@ -7,8 +7,8 @@
 module Parser where
 
 import AST
-import Control.Applicative (Alternative (empty, many), many, optional, (<|>))
-import Control.Monad (MonadPlus, mzero, void)
+import Control.Applicative (Alternative (empty, many), many, optional, some, (<|>))
+import Control.Monad (MonadPlus, mzero, void, when)
 import Data.Functor (($>), (<&>))
 import qualified Data.Set as S
 import Lexer
@@ -56,6 +56,10 @@ instance Alternative Parser where
 instance MonadPlus Parser where
   mzero :: Parser a
   mzero = empty
+
+instance MonadFail Parser where
+  fail :: String -> Parser a
+  fail = Parser . const . Left
 
 try :: Parser a -> Parser ()
 try (Parser p) = Parser $ \tokens -> case p tokens of
@@ -146,22 +150,13 @@ parseIntLiteral = Parser $ \tokens -> case tokens of
   (TConstant i : ts) -> Right (IntLiteral i, ts)
   _ -> Left $ "Expected integer literal, got: " ++ show (take 10 tokens)
 
--- parseType :: Parser Type
--- parseType = Parser $ \tokens -> case tokens of
---   (TIntKeyword : ts) -> Right (IntType, ts)
---   (TVoidKeyword : ts) -> Right (VoidType, ts)
---   _ -> Left "Invalid type"
-
--- parseParameter :: Parser Parameter
--- parseParameter = Parameter <$> parseType <*> parseIdentifier
-
 parseVarDecl :: Parser VarDecl
 parseVarDecl = do
-  parseToken TIntKeyword
+  (_, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
   expr <- optional (parseToken TAssignment *> parseExpr)
   parseToken TSemicolon
-  return (VarDecl name expr)
+  return (VarDecl name expr storageClass)
 
 parseUExpr :: Parser Expr
 parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr
@@ -355,18 +350,18 @@ parseBlock = do
 
 parseFunctionJustDecl :: Parser FuncDecl
 parseFunctionJustDecl = do
-  parseToken TIntKeyword
+  (_, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
   params <- parseParameters
   parseToken TSemicolon
-  return (FuncDecl name params Nothing)
+  return (FuncDecl name params Nothing storageClass)
 
 parseFunctionWithBody :: Parser FuncDecl
 parseFunctionWithBody = do
-  parseToken TIntKeyword
+  (_, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
   params <- parseParameters
-  FuncDecl name params . Just <$> parseBlock
+  FuncDecl name params . Just <$> parseBlock <*> pure storageClass
 
 parseFunction :: Parser FuncDecl
 parseFunction = parseFunctionJustDecl <|> parseFunctionWithBody
@@ -389,6 +384,27 @@ parseParameterList = do
 parseParameters :: Parser [Identifier]
 parseParameters = parseVoidParameter <|> parseParameterList
 
+parseSpecifier :: Parser Token
+parseSpecifier = satisfy isSpecifier
+
+parseTypeAndStorageClass :: Parser (Token, Maybe StorageClass)
+parseTypeAndStorageClass = do
+  specifiers <- some parseSpecifier
+  let typeSpecifier = filter (== TIntKeyword) specifiers
+  let storageClassSpecifier = filter (/= TIntKeyword) specifiers
+  when (null typeSpecifier) $ fail "No type specifier"
+  when (length typeSpecifier > 1) $ fail "Multiple type specifiers"
+  when (length storageClassSpecifier > 1) $ fail "Multiple storage class specifiers"
+  return (head typeSpecifier, listToMaybe (fmap tokenToStorageClass storageClassSpecifier))
+  where
+    listToMaybe :: [a] -> Maybe a
+    listToMaybe [] = Nothing
+    listToMaybe (x : _) = Just x
+    tokenToStorageClass :: Token -> StorageClass
+    tokenToStorageClass TExternKeyword = Extern
+    tokenToStorageClass TStaticKeyword = Static
+    tokenToStorageClass t = error $ "Invalid storage class: " ++ show t
+
 parseArguments :: Parser [Expr]
 parseArguments = do
   parseToken TOpenParen
@@ -403,9 +419,7 @@ parseArguments = do
       return (arg : rest_args)
 
 parseProgram :: Parser Program
-parseProgram = do
-  function <- many parseFunction
-  return (Program function)
+parseProgram = Program <$> some parseDecl
 
 parse :: [Token] -> Program
 parse tokens = case runParser parseProgram tokens of
