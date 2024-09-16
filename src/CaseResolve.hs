@@ -46,15 +46,15 @@ instance CaseResolve Decl where
 
 instance CaseResolve Stmt where
   resolve :: Stmt -> CaseResolveT Stmt
-  resolve (CaseStmt (Just (Identifier name)) (Constant i) stmt) = do
+  resolve (CaseStmt (Just name) (Constant i) stmt) = do
     (caseMap, defaultMap) <- get
     let caseSet = M.findWithDefault S.empty name caseMap
     if S.member i caseSet
       then lift $ Left "Duplicate case statement"
       else do
         put (M.insert name (S.insert i caseSet) caseMap, defaultMap)
-        CaseStmt (Just (Identifier name)) (Constant i) <$> resolve stmt
-  resolve d@(DefaultStmt (Just (Identifier l))) = do
+        CaseStmt (Just name) (Constant i) <$> resolve stmt
+  resolve d@(DefaultStmt (Just l)) = do
     (caseMap, defaultMap) <- get
     if M.findWithDefault False l defaultMap
       then lift $ Left "Duplicate default statement"
@@ -67,7 +67,7 @@ instance CaseResolve Stmt where
   resolve (WhileStmt l expr stmt) = WhileStmt l expr <$> resolve stmt
   resolve (ForStmt l forinit expr inc stmt) = ForStmt l forinit expr inc <$> resolve stmt
   resolve (IfStmt expr thenStmt elseStmt) = IfStmt expr <$> resolve thenStmt <*> traverse resolve elseStmt
-  resolve (SwitchStmt label@(Just (Identifier l)) s d expr block) = do
+  resolve (SwitchStmt label@(Just l) s d expr block) = do
     block' <- resolve block
     (caseMap, defaultMap) <- get
     let thisCaseSet = M.findWithDefault S.empty l caseMap

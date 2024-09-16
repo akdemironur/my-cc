@@ -8,7 +8,7 @@
 
 module Codegen where
 
-import AST (Identifier (Identifier))
+import AST (Identifier)
 import Control.Monad.State
 import Data.Map (Map, empty, insert, lookup)
 import Data.Map as M (member)
@@ -364,15 +364,14 @@ instance PseudeRegisterPass AsmOperand where
   pseudoRegisterPass :: AsmOperand -> PseudoRegisterState AsmOperand
   pseudoRegisterPass (Pseudo s) = do
     (m, i, st) <- get
-    let pseudoIdentifier = Identifier s
-    case Data.Map.lookup pseudoIdentifier st of
+    case Data.Map.lookup s st of
       Just (_, StaticAttr {}) -> return $ Data (namePrefix ++ s)
       _ -> case Data.Map.lookup s m of
         Just offset -> return $ Stack offset
         Nothing -> do
-          let newMap = Data.Map.insert s (-(8 * (i + 1))) m
+          let newMap = Data.Map.insert s (-(4 * (i + 1))) m
           put (newMap, i + 1, st)
-          return $ Stack (-(8 * (i + 1)))
+          return $ Stack (-(4 * (i + 1)))
   pseudoRegisterPass x = return x
 
 instance PseudeRegisterPass AsmInstruction where
@@ -408,8 +407,8 @@ replacePseudoRegisters st p = (p', offset)
 addAllocateStack :: (AsmTopLevel, StackOffset) -> AsmTopLevel
 addAllocateStack (AsmFunction name glob instrs, offset) = AsmFunction name glob newInstrs
   where
-    offset' = if even offset then offset else offset + 1
-    newInstrs = AsmAllocateStack (offset' * 8) : instrs
+    offset' = if rem offset 4 > 0 then offset + 4 - rem offset 4 else offset
+    newInstrs = AsmAllocateStack (offset' * 4) : instrs
 addAllocateStack x = fst x
 
 pseudoFix :: SymbolTable -> AsmTopLevel -> AsmTopLevel

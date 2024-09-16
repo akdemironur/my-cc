@@ -142,7 +142,7 @@ tokenToPostOp t = error $ "Invalid post operator: " ++ show t
 
 parseIdentifier :: Parser Identifier
 parseIdentifier = Parser $ \tokens -> case tokens of
-  (TIdentifier s : ts) -> Right (Identifier s, ts)
+  (TIdentifier s : ts) -> Right (s, ts)
   _ -> Left $ "Expected identifier, got: " ++ show (take 10 tokens)
 
 parseIntLiteral :: Parser IntLiteral

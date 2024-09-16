@@ -16,7 +16,7 @@ instance Show LLabelType where
 data LLabel = LLabel LLabelType Int deriving (Show, Eq)
 
 llabelToIdentifier :: LLabel -> Identifier
-llabelToIdentifier (LLabel l num) = Identifier $ show l ++ show num
+llabelToIdentifier (LLabel l num) = show l ++ show num
 
 data LScope = LScope LLabel (Maybe LScope) deriving (Show, Eq)
 

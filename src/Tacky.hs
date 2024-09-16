@@ -19,15 +19,15 @@ data TACTopLevel
   deriving (Show, Eq)
 
 breakLabel :: Maybe Identifier -> String
-breakLabel (Just (Identifier name)) = name ++ ".break"
+breakLabel (Just name) = name ++ ".break"
 breakLabel Nothing = error "BreakLabel: This shouldnt happen"
 
 continueLabel :: Maybe Identifier -> String
-continueLabel (Just (Identifier name)) = name ++ ".continue"
+continueLabel (Just name) = name ++ ".continue"
 continueLabel Nothing = error "ContinueLabel: This shouldnt happen"
 
 startLabel :: Maybe Identifier -> String
-startLabel (Just (Identifier name)) = name ++ ".start"
+startLabel (Just name) = name ++ ".start"
 startLabel Nothing = error "StartLabel: This shouldnt happen"
 
 data TACInstruction
@@ -179,7 +179,7 @@ globalNameGenerator prefix = do
 instance Emittable Expr where
   emitTacky :: Expr -> InstrSt TACVal
   emitTacky (Constant (IntLiteral i)) = return $ TACConstant i
-  emitTacky (Var (Identifier name)) = return $ TACVar name
+  emitTacky (Var name) = return $ TACVar name
   emitTacky (Binary And left right) = do
     false_label <- globalNameGenerator "false."
     end_label <- globalNameGenerator "end."
@@ -274,7 +274,7 @@ instance Emittable Expr where
     (num'', instr'') <- get
     put (num'', instr'' ++ [TACCopy else_val (TACVar dst_name), TACLabel end_label])
     return $ TACVar dst_name
-  emitTacky (FunctionCall (Identifier name) args) = do
+  emitTacky (FunctionCall name args) = do
     arg_vals <- traverse emitTacky args
     dst_name <- globalNameGenerator "tmp."
     (num, instr) <- get
@@ -283,13 +283,13 @@ instance Emittable Expr where
 
 instance Emittable VarDecl where
   emitTacky :: VarDecl -> InstrSt TACVal
-  emitTacky (VarDecl (Identifier name) _ (Just Static)) = return $ TACVar name
-  emitTacky (VarDecl (Identifier name) (Just e) _) = do
+  emitTacky (VarDecl name _ (Just Static)) = return $ TACVar name
+  emitTacky (VarDecl name (Just e) _) = do
     val <- emitTacky e
     (num, instr) <- get
     put (num, instr ++ [TACCopy val (TACVar name)])
     return val
-  emitTacky (VarDecl (Identifier name) Nothing _) = return $ TACVar name
+  emitTacky (VarDecl name Nothing _) = return $ TACVar name
 
 instance Emittable Stmt where
   emitTacky :: Stmt -> InstrSt TACVal
@@ -330,12 +330,12 @@ instance Emittable Stmt where
     (num', instr') <- get
     put (num', instr' ++ [TACLabel end_label])
     return $ TACConstant 0
-  emitTacky (LabeledStmt (Identifier name) stmt) = do
+  emitTacky (LabeledStmt name stmt) = do
     (num, instr) <- get
     put (num, instr ++ [TACLabel $ name ++ ".label"])
     _ <- emitTacky stmt
     return $ TACConstant 0
-  emitTacky (GotoStmt (Identifier name)) = do
+  emitTacky (GotoStmt name) = do
     (num, instr) <- get
     put (num, instr ++ [TACJump $ name ++ ".label"])
     return $ TACConstant 0
@@ -427,10 +427,10 @@ instance Emittable Stmt where
   emitTacky (CaseStmt {}) = error "CaseStmt with non-constant, this shouldnt happen"
 
 caseToTACIdentifier :: Identifier -> IntLiteral -> TACIdentifier
-caseToTACIdentifier (Identifier name) (IntLiteral i) = name ++ ".case." ++ show i
+caseToTACIdentifier name (IntLiteral i) = name ++ ".case." ++ show i
 
 switchToDefaultTACIdentifier :: Identifier -> TACIdentifier
-switchToDefaultTACIdentifier (Identifier name) = name ++ ".default"
+switchToDefaultTACIdentifier name = name ++ ".default"
 
 caseToIf :: Identifier -> TACVal -> IntLiteral -> InstrSt ()
 caseToIf identifier v i@(IntLiteral i') = do
@@ -464,11 +464,10 @@ instance Emittable FuncDecl where
   emitTacky _ = return $ TACConstant 0
 
 toTACFunc :: SymbolTable -> GlobalNameMap -> FuncDecl -> (GlobalNameMap, TACTopLevel)
-toTACFunc st globalMap (FuncDecl (Identifier name) args (Just block) _) = (newMap, TACFunction name functionGlobal tacArgs (instrs ++ [TACReturn $ TACConstant 0]))
+toTACFunc st globalMap (FuncDecl name args (Just block) _) = (newMap, TACFunction name functionGlobal args (instrs ++ [TACReturn $ TACConstant 0]))
   where
     (newMap, instrs) = execState (emitTacky block) (globalMap, [])
-    tacArgs = fmap (\(Identifier arg) -> arg) args
-    functionSymbol = M.lookup (Identifier name) st
+    functionSymbol = M.lookup name st
     functionGlobal = case functionSymbol of
       Just (_, FuncAttr _ global) -> global
       _ -> error "Function without symbol, this shouldnt happen"
@@ -503,6 +502,6 @@ symbolsToTacky st = fmap convert stList
     filterStatic (_, (_, StaticAttr (Initial _) _)) = True
     filterStatic (_, (_, StaticAttr Tentative _)) = True
     filterStatic _ = False
-    convert (Identifier name, (_, StaticAttr (Initial i) global)) = TACStaticVariable name global i
-    convert (Identifier name, (_, StaticAttr Tentative global)) = TACStaticVariable name global 0
+    convert (name, (_, StaticAttr (Initial i) global)) = TACStaticVariable name global i
+    convert (name, (_, StaticAttr Tentative global)) = TACStaticVariable name global 0
     convert _ = error "This shouldnt happen"

@@ -19,28 +19,27 @@ class Resolve a where
   resolve :: a -> VarResolve a
 
 declareVarT :: Maybe StorageClass -> Identifier -> VarResolve Identifier
-declareVarT sc identifier@(Identifier name) = do
+declareVarT sc name = do
   (scope@(ScopeVarMap varMap parent), num) <- get
-  let oldDecl = lookupVarLink identifier scope
-  let inCurrentScope = isDeclaredInCurrentScope identifier scope
+  let oldDecl = lookupVarLink name scope
+  let inCurrentScope = isDeclaredInCurrentScope name scope
   case (inCurrentScope, oldDecl, sc) of
     (True, Just (_, _), Nothing) -> lift . Left $ "Variable " ++ name ++ " already declared."
     (True, Just (_, False), _) -> lift . Left $ "Conflicting linkage for variable: " ++ name
     (True, Just _, Just Static) -> lift . Left $ "Conflicting linkage for variable: " ++ name
     _ -> return ()
-  let identifier' = Identifier $ name ++ "." ++ show num
-  put (ScopeVarMap (M.insert identifier (identifier', sc == Just Extern) varMap) parent, num + 1)
+  let identifier' = name ++ "." ++ show num
+  put (ScopeVarMap (M.insert name (identifier', sc == Just Extern) varMap) parent, num + 1)
   return identifier'
 
 declareFunT :: Identifier -> VarResolve Identifier
-declareFunT identifier@(Identifier name) = do
+declareFunT name = do
   (scope@(ScopeVarMap varMap parent), num) <- get
-  case (lookupVarLink identifier scope, isDeclaredInCurrentScope identifier scope) of
+  case (lookupVarLink name scope, isDeclaredInCurrentScope name scope) of
     (Just (_, False), True) -> lift $ Left $ "Function " ++ name ++ " already declared."
     _ -> do
-      let identifier' = identifier
-      put (ScopeVarMap (M.insert identifier (identifier', True) varMap) parent, num)
-      return identifier'
+      put (ScopeVarMap (M.insert name (name, True) varMap) parent, num)
+      return name
 
 isDeclared :: Identifier -> ScopeVarMap -> Bool
 isDeclared identifier (ScopeVarMap varMap parent) =

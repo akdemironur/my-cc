@@ -9,7 +9,7 @@ newtype Program = Program [Decl] deriving (Eq)
 
 newtype IntLiteral = IntLiteral Int deriving (Eq, Ord)
 
-newtype Identifier = Identifier String deriving (Eq, Ord)
+type Identifier = String
 
 data ForInit
   = InitDecl VarDecl
@@ -229,10 +229,6 @@ instance Show Block where
 instance Show IntLiteral where
   show :: IntLiteral -> String
   show (IntLiteral i) = show i
-
-instance Show Identifier where
-  show :: Identifier -> String
-  show (Identifier s) = show s
 
 instance Show ForInit where
   show :: ForInit -> String
