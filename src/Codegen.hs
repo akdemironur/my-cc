@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# HLINT ignore "Use newtype instead of data" #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
@@ -6,12 +7,17 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 
+{-# HLINT ignore "Use camelCase" #-}
+
 module Codegen where
 
-import AST (Identifier (Identifier))
+import AST
+import Control.Monad.Reader
 import Control.Monad.State
+import Data.List (intercalate)
 import Data.Map (Map, empty, insert, lookup)
 import Data.Map as M (member)
+import qualified Data.Map as M
 import GHC.Base (Symbol)
 import Lexer
 import Parser
@@ -19,12 +25,33 @@ import Pass
 import System.Info (os)
 import Tacky
 import TypeCheck
+import Util
 
 data AsmProgram = AsmProgram [AsmTopLevel] deriving (Show, Eq)
 
+data AsmType = Longword | Quadword deriving (Show, Eq)
+
+data AsmSymbolTableEntry
+  = Obj AsmType Bool -- isStatic
+  | Fun Bool -- isDefined
+  deriving (Show, Eq)
+
+stToAsmST :: SymbolTable -> AsmSymbolTable
+stToAsmST = M.map stToAsmSTEntry
+  where
+    stToAsmSTEntry :: SymbolTableEntry -> AsmSymbolTableEntry
+    stToAsmSTEntry (CFunc {}, FuncAttr defined _) = Fun defined
+    stToAsmSTEntry (CInt, LocalAttr) = Obj Longword False
+    stToAsmSTEntry (CInt, StaticAttr {}) = Obj Longword True
+    stToAsmSTEntry (CLong, LocalAttr) = Obj Quadword False
+    stToAsmSTEntry (CLong, StaticAttr {}) = Obj Quadword True
+    stToAsmSTEntry _ = error "Invalid symbol table entry"
+
+type AsmSymbolTable = M.Map Identifier AsmSymbolTableEntry
+
 data AsmTopLevel
-  = AsmFunction String Bool [AsmInstruction]
-  | AsmStaticVariable String Bool Int
+  = AsmFunction String Bool [AsmInstruction] -- identifier isDefined instructions
+  | AsmStaticVariable String Bool Int StaticInit -- identifier isStatic alignment initial
   deriving (Show, Eq)
 
 labelPrefix :: String
@@ -63,18 +90,17 @@ instance ToAsm AsmCondCode where
 type Offset = Int
 
 data AsmInstruction
-  = AsmMov AsmOperand AsmOperand
-  | AsmUnary AsmUnaryOp AsmOperand
-  | AsmBinary AsmBinaryOp AsmOperand AsmOperand
-  | AsmCmp AsmOperand AsmOperand
-  | AsmIdiv AsmOperand
-  | AsmCdq
+  = AsmMov AsmType AsmOperand AsmOperand
+  | AsmMovsx AsmOperand AsmOperand
+  | AsmUnary AsmUnaryOp AsmType AsmOperand
+  | AsmBinary AsmBinaryOp AsmType AsmOperand AsmOperand
+  | AsmCmp AsmType AsmOperand AsmOperand
+  | AsmIdiv AsmType AsmOperand
+  | AsmCdq AsmType
   | AsmJmp String
   | AsmJmpCC AsmCondCode String
   | AsmSetCC AsmCondCode AsmOperand
   | AsmLabel String
-  | AsmAllocateStack Offset
-  | AsmDeallocateStack Offset
   | AsmPush AsmOperand
   | AsmCall String
   | AsmRet
@@ -114,6 +140,7 @@ data AsmReg
   | R9
   | R10
   | R11
+  | SP
   deriving (Show, Eq)
 
 class ToAsm a where
@@ -129,6 +156,7 @@ codeEmissionReg1 DI = "%dil"
 codeEmissionReg1 SI = "%sil"
 codeEmissionReg1 R8 = "%r8b"
 codeEmissionReg1 R9 = "%r9b"
+codeEmissionReg1 SP = "%spl"
 
 codeEmissionReg4 :: AsmReg -> String
 codeEmissionReg4 AX = "%eax"
@@ -140,6 +168,7 @@ codeEmissionReg4 DI = "%edi"
 codeEmissionReg4 SI = "%esi"
 codeEmissionReg4 R8 = "%r8d"
 codeEmissionReg4 R9 = "%r9d"
+codeEmissionReg4 SP = "%esp"
 
 codeEmissionReg8 :: AsmReg -> String
 codeEmissionReg8 AX = "%rax"
@@ -151,22 +180,23 @@ codeEmissionReg8 DI = "%rdi"
 codeEmissionReg8 SI = "%rsi"
 codeEmissionReg8 R8 = "%r8"
 codeEmissionReg8 R9 = "%r9"
+codeEmissionReg8 SP = "%rsp"
 
 instance ToAsm AsmUnaryOp where
   codeEmission :: AsmUnaryOp -> String
-  codeEmission AsmNeg = "negl"
-  codeEmission AsmNot = "notl"
+  codeEmission AsmNeg = "neg"
+  codeEmission AsmNot = "not"
 
 instance ToAsm AsmBinaryOp where
   codeEmission :: AsmBinaryOp -> String
-  codeEmission AsmAdd = "addl"
-  codeEmission AsmSub = "subl"
-  codeEmission AsmMult = "imull"
-  codeEmission AsmXor = "xorl"
-  codeEmission AsmAnd = "andl"
-  codeEmission AsmOr = "orl"
-  codeEmission AsmSal = "sall"
-  codeEmission AsmSar = "sarl"
+  codeEmission AsmAdd = "add"
+  codeEmission AsmSub = "sub"
+  codeEmission AsmMult = "imul"
+  codeEmission AsmXor = "xor"
+  codeEmission AsmAnd = "and"
+  codeEmission AsmOr = "or"
+  codeEmission AsmSal = "sal"
+  codeEmission AsmSar = "sar"
 
 instance ToAsm AsmOperand where
   codeEmission :: AsmOperand -> String
@@ -176,27 +206,66 @@ instance ToAsm AsmOperand where
   codeEmission (Data s) = s ++ "(%rip)"
   codeEmission (Pseudo i) = "Pseudo" ++ i
 
+oprEmission :: AsmType -> AsmOperand -> String
+oprEmission Longword (Register r) = codeEmissionReg4 r
+oprEmission Quadword (Register r) = codeEmissionReg8 r
+oprEmission _ op = codeEmission op
+
+instance ToAsm AsmType where
+  codeEmission :: AsmType -> String
+  codeEmission Longword = "l"
+  codeEmission Quadword = "q"
+
 instance ToAsm AsmInstruction where
   codeEmission :: AsmInstruction -> String
-  codeEmission (AsmLabel label) = labelPrefix ++ label ++ ":"
-  codeEmission (AsmMov src dst) = "    " ++ "movl " ++ codeEmission src ++ ", " ++ codeEmission dst
-  codeEmission AsmRet = unlines (fmap ("    " ++) ["movq %rbp, %rsp", "popq %rbp", "ret"])
-  codeEmission (AsmUnary op operand) = "    " ++ codeEmission op ++ " " ++ codeEmission operand
-  codeEmission (AsmAllocateStack i) = "    " ++ "subq $" ++ show i ++ ", %rsp"
-  codeEmission AsmCdq = "    " ++ "cdq"
-  codeEmission (AsmBinary AsmSal (Register reg) dst) = "    " ++ codeEmission AsmSal ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
-  codeEmission (AsmBinary AsmSar (Register reg) dst) = "    " ++ codeEmission AsmSar ++ " " ++ codeEmissionReg1 reg ++ ", " ++ codeEmission dst
-  codeEmission (AsmBinary op src dst) = "    " ++ codeEmission op ++ " " ++ codeEmission src ++ ", " ++ codeEmission dst
-  codeEmission (AsmIdiv operand) = "    " ++ "idivl " ++ codeEmission operand
-  codeEmission (AsmCmp op1 op2) = "    " ++ "cmpl " ++ codeEmission op1 ++ ", " ++ codeEmission op2
-  codeEmission (AsmJmp label) = "    " ++ "jmp " ++ labelPrefix ++ label
-  codeEmission (AsmJmpCC cc label) = "    " ++ "j" ++ codeEmission cc ++ " " ++ labelPrefix ++ label
-  codeEmission (AsmSetCC cc (Register reg)) = "    " ++ "set" ++ codeEmission cc ++ " " ++ codeEmissionReg1 reg
-  codeEmission (AsmSetCC cc operand) = "    " ++ "set" ++ codeEmission cc ++ " " ++ codeEmission operand
-  codeEmission (AsmCall name) = "    " ++ "call " ++ callPrefix ++ name ++ callPostfix
-  codeEmission (AsmPush (Register r)) = "    " ++ "pushq " ++ codeEmissionReg8 r
-  codeEmission (AsmPush operand) = "    " ++ "pushq " ++ codeEmission operand
-  codeEmission (AsmDeallocateStack i) = "    " ++ "addq $" ++ show i ++ ", %rsp"
+  codeEmission = \case
+    AsmLabel label -> formatLabel label
+    AsmMov t src dst -> formatInstruction "mov" (Just t) [oprEmission t src, oprEmission t dst]
+    AsmRet -> unlines . map indent $ ["movq %rbp, %rsp", "popq %rbp", "ret"]
+    AsmUnary op t operand -> formatInstruction (codeEmission op) (Just t) [oprEmission t operand]
+    AsmCdq Longword -> indent "cdq"
+    AsmCdq Quadword -> indent "cqo"
+    AsmBinary op t src dst -> formatBinaryInstruction op t src dst
+    AsmIdiv t operand -> formatInstruction "idiv" (Just t) [oprEmission t operand]
+    AsmCmp t op1 op2 -> formatInstruction "cmp" (Just t) [oprEmission t op1, oprEmission t op2]
+    AsmJmp label -> formatJump "jmp" label
+    AsmJmpCC cc label -> formatJump ("j" ++ codeEmission cc) label
+    AsmSetCC cc (Register reg) -> formatInstruction ("set" ++ codeEmission cc) Nothing [codeEmissionReg1 reg]
+    AsmSetCC cc operand -> formatInstruction ("set" ++ codeEmission cc) Nothing [codeEmission operand]
+    AsmCall name -> formatCall name
+    AsmPush (Register r) -> formatPush $ codeEmissionReg8 r
+    AsmPush operand -> formatPush $ codeEmission operand
+    AsmMovsx src dst -> formatInstruction "movslq" Nothing [oprEmission Longword src, oprEmission Quadword dst]
+
+indent :: String -> String
+indent = ("    " ++)
+
+formatLabel :: String -> String
+formatLabel label = labelPrefix ++ label ++ ":"
+
+formatInstruction :: String -> Maybe AsmType -> [String] -> String
+formatInstruction mnemonic t operands =
+  indent $ mnemonic ++ typeSuffix ++ " " ++ intercalate ", " operands
+  where
+    typeSuffix = case t of
+      Just Longword -> "l"
+      Just Quadword -> "q"
+      Nothing -> ""
+
+formatBinaryInstruction :: AsmBinaryOp -> AsmType -> AsmOperand -> AsmOperand -> String
+formatBinaryInstruction op t src dst = case (op, src) of
+  (AsmSal, Register reg) -> formatInstruction (codeEmission AsmSal) (Just t) [codeEmissionReg1 reg, oprEmission t dst]
+  (AsmSar, Register reg) -> formatInstruction (codeEmission AsmSar) (Just t) [codeEmissionReg1 reg, oprEmission t dst]
+  _ -> formatInstruction (codeEmission op) (Just t) [oprEmission t src, oprEmission t dst]
+
+formatJump :: String -> String -> String
+formatJump jumpType label = indent $ jumpType ++ " " ++ labelPrefix ++ label
+
+formatCall :: String -> String
+formatCall name = indent $ "call " ++ callPrefix ++ name ++ callPostfix
+
+formatPush :: String -> String
+formatPush operand = indent $ "pushq " ++ operand
 
 namePrefix :: String
 namePrefix = case os of
@@ -207,17 +276,28 @@ globlDirective :: String -> Bool -> String
 globlDirective name True = "    .globl " ++ nameDirective name
 globlDirective _ False = ""
 
-alignmentDirective :: String
-alignmentDirective = "    .balign 4"
+alignmentDirective :: Int -> String
+alignmentDirective = ("    .balign " ++) . show
+
+bssOrData :: StaticInit -> String
+bssOrData (IntInit 0) = "    .bss"
+bssOrData (LongInit 0) = "    .bss"
+bssOrData _ = "    .data"
 
 nameDirective :: String -> String
 nameDirective name = namePrefix ++ name
 
+instance ToAsm StaticInit where
+  codeEmission :: StaticInit -> String
+  codeEmission (IntInit 0) = indent ".zero 4"
+  codeEmission (IntInit i) = indent ".long " ++ show i
+  codeEmission (LongInit 0) = indent ".zero 8"
+  codeEmission (LongInit i) = indent ".quad " ++ show i
+
 instance ToAsm AsmTopLevel where
   codeEmission :: AsmTopLevel -> String
-  codeEmission (AsmStaticVariable name glob 0) = unlines [globlDirective name glob, "    .bss", alignmentDirective, nameDirective name ++ ":", "    .zero 4"]
-  codeEmission (AsmStaticVariable name glob initial) = unlines [globlDirective name glob, "    .data", alignmentDirective, nameDirective name ++ ":", "    .long " ++ show initial]
-  codeEmission (AsmFunction name glob instructions) = unlines $ [globlDirective name glob, "    .text", nameDirective name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ fmap codeEmission instructions
+  codeEmission (AsmStaticVariable name glob alignment iv) = unlines [globlDirective name glob, bssOrData iv, alignmentDirective alignment, nameDirective name ++ ":", codeEmission iv]
+  codeEmission (AsmFunction name glob instructions) = unlines $ [globlDirective name glob, indent ".text", nameDirective name ++ ":", indent "pushq %rbp", indent "movq %rsp, %rbp"] ++ fmap codeEmission instructions
 
 instance ToAsm AsmProgram where
   codeEmission :: AsmProgram -> String
@@ -229,7 +309,8 @@ instance ToAsm AsmProgram where
         _ -> "\n.section .note.GNU-stack,\"\",@progbits\n"
 
 codegenTVal :: TACVal -> AsmOperand
-codegenTVal (TACConstant i) = Imm i
+codegenTVal (TACConstant (ConstInt i)) = Imm i
+codegenTVal (TACConstant (ConstLong i)) = Imm i
 codegenTVal (TACVar name) = Pseudo name
 
 codegenTUnaryOp :: TACUnaryOp -> AsmUnaryOp
@@ -248,61 +329,61 @@ codegenTBinaryOp TACLeftShift = AsmSal
 codegenTBinaryOp TACRightShift = AsmSar
 codegenTBinaryOp _ = error "Division and remainder should be handled separately"
 
-codegenTInstruction :: TACInstruction -> [AsmInstruction]
-codegenTInstruction (TACReturn val) =
-  [ AsmMov (codegenTVal val) (Register AX),
+codegenTInstruction :: AsmSymbolTable -> TACInstruction -> [AsmInstruction]
+codegenTInstruction st (TACReturn val) =
+  [ AsmMov (getType st val) (codegenTVal val) (Register AX),
     AsmRet
   ]
-codegenTInstruction (TACUnary TACNot src dst) =
-  [ AsmCmp (Imm 0) (codegenTVal src),
-    AsmMov (Imm 0) (codegenTVal dst),
+codegenTInstruction st (TACUnary TACNot src dst) =
+  [ AsmCmp (getType st src) (Imm 0) (codegenTVal src),
+    AsmMov (getType st dst) (Imm 0) (codegenTVal dst),
     AsmSetCC E (codegenTVal dst)
   ]
-codegenTInstruction (TACUnary op src dst) =
-  [ AsmMov (codegenTVal src) (codegenTVal dst),
-    AsmUnary (codegenTUnaryOp op) (codegenTVal dst)
+codegenTInstruction st (TACUnary op src dst) =
+  [ AsmMov (getType st src) (codegenTVal src) (codegenTVal dst),
+    AsmUnary (codegenTUnaryOp op) (getType st src) (codegenTVal dst)
   ]
-codegenTInstruction (TACBinary TACDivide src1 src2 dst) =
-  [ AsmMov (codegenTVal src1) (Register AX),
-    AsmCdq,
-    AsmIdiv (codegenTVal src2),
-    AsmMov (Register AX) (codegenTVal dst)
+codegenTInstruction st (TACBinary TACDivide src1 src2 dst) =
+  [ AsmMov (getType st src1) (codegenTVal src1) (Register AX),
+    AsmCdq (getType st src1),
+    AsmIdiv (getType st src1) (codegenTVal src2),
+    AsmMov (getType st src1) (Register AX) (codegenTVal dst)
   ]
-codegenTInstruction (TACBinary TACRemainder src1 src2 dst) =
-  [ AsmMov (codegenTVal src1) (Register AX),
-    AsmCdq,
-    AsmIdiv (codegenTVal src2),
-    AsmMov (Register DX) (codegenTVal dst)
+codegenTInstruction st (TACBinary TACRemainder src1 src2 dst) =
+  [ AsmMov (getType st src1) (codegenTVal src1) (Register AX),
+    AsmCdq (getType st src1),
+    AsmIdiv (getType st src2) (codegenTVal src2),
+    AsmMov (getType st dst) (Register DX) (codegenTVal dst)
   ]
-codegenTInstruction b@(TACBinary op' _ _ _)
+codegenTInstruction st b@(TACBinary op' _ _ _)
   | isRelationalOp op' = codegenTInstructionRelational b
   | otherwise = codegenTInstructionNonRelational b
   where
     codegenTInstructionNonRelational :: TACInstruction -> [AsmInstruction]
     codegenTInstructionNonRelational (TACBinary op src1 src2 dst) =
-      [ AsmMov (codegenTVal src1) (codegenTVal dst),
-        AsmBinary (codegenTBinaryOp op) (codegenTVal src2) (codegenTVal dst)
+      [ AsmMov (getType st src1) (codegenTVal src1) (codegenTVal dst),
+        AsmBinary (codegenTBinaryOp op) (getType st dst) (codegenTVal src2) (codegenTVal dst)
       ]
     codegenTInstructionNonRelational _ = error "Not a binary operation"
     codegenTInstructionRelational :: TACInstruction -> [AsmInstruction]
     codegenTInstructionRelational (TACBinary op src1 src2 dst) =
-      [ AsmCmp (codegenTVal src2) (codegenTVal src1),
-        AsmMov (Imm 0) (codegenTVal dst),
+      [ AsmCmp (getType st src1) (codegenTVal src2) (codegenTVal src1),
+        AsmMov (getType st dst) (Imm 0) (codegenTVal dst),
         AsmSetCC (relationalOpToCC op) (codegenTVal dst)
       ]
     codegenTInstructionRelational _ = error "Not a binary operation"
-codegenTInstruction (TACJump target) = [AsmJmp target]
-codegenTInstruction (TACJumpIfZero condition target) =
-  [ AsmCmp (Imm 0) (codegenTVal condition),
+codegenTInstruction _ (TACJump target) = [AsmJmp target]
+codegenTInstruction st (TACJumpIfZero condition target) =
+  [ AsmCmp (getType st condition) (Imm 0) (codegenTVal condition),
     AsmJmpCC E target
   ]
-codegenTInstruction (TACJumpIfNotZero condition target) =
-  [ AsmCmp (Imm 0) (codegenTVal condition),
+codegenTInstruction st (TACJumpIfNotZero condition target) =
+  [ AsmCmp (getType st condition) (Imm 0) (codegenTVal condition),
     AsmJmpCC NE target
   ]
-codegenTInstruction (TACCopy src dst) = [AsmMov (codegenTVal src) (codegenTVal dst)]
-codegenTInstruction (TACLabel label) = [AsmLabel label]
-codegenTInstruction (TACFuncCall name args dst) =
+codegenTInstruction st (TACCopy src dst) = [AsmMov (getType st dst) (codegenTVal src) (codegenTVal dst)]
+codegenTInstruction _ (TACLabel label) = [AsmLabel label]
+codegenTInstruction st (TACFuncCall name args dst) =
   stack_padding_instr
     ++ arg_pass_to_registers
     ++ arg_pass_to_stack
@@ -314,20 +395,43 @@ codegenTInstruction (TACFuncCall name args dst) =
     stack_args = drop (length register_args) args
     stack_args_reverse = reverse stack_args
     arg_registers = take (length register_args) [DI, SI, DX, CX, R8, R9]
-    stack_padding = if even (length stack_args) then (0 :: Offset) else 8
-    stack_padding_instr = [AsmAllocateStack stack_padding | stack_padding /= 0]
-    arg_pass_to_registers = zipWith (\a r -> AsmMov (codegenTVal a) (Register r)) register_args arg_registers
-    arg_pass_to_stack = concatMap (passOperandToStack . codegenTVal) stack_args_reverse
+    stack_padding = if even (length stack_args) then 0 else 8
+    stack_padding_instr = allocateStack stack_padding
+    arg_pass_to_registers = zipWith (\a r -> AsmMov (getType st a) (codegenTVal a) (Register r)) register_args arg_registers
+    arg_pass_to_stack = concatMap (passOperandToStack st) stack_args_reverse
     funcall_instr = [AsmCall name]
-    bytes_to_remove = 8 * length stack_args + stack_padding
-    deallocate_instr = [AsmDeallocateStack bytes_to_remove | bytes_to_remove /= 0]
+    bytes_to_remove = length stack_args * 8 + stack_padding
+    deallocate_instr = deallocateStack bytes_to_remove
     asm_dst = codegenTVal dst
-    retrieve_result_instr = [AsmMov (Register AX) asm_dst]
+    retrieve_result_instr = [AsmMov (getType st dst) (Register AX) asm_dst]
+codegenTInstruction _ (TACSignExtend src dst) = [AsmMovsx (codegenTVal src) (codegenTVal dst)]
+codegenTInstruction _ (TACTruncate src dst) = [AsmMov Longword (codegenTVal src) (codegenTVal dst)]
 
-passOperandToStack :: AsmOperand -> [AsmInstruction]
-passOperandToStack (Imm i) = [AsmPush (Imm i)]
-passOperandToStack (Register r) = [AsmPush (Register r)]
-passOperandToStack asm_arg = [AsmMov asm_arg (Register AX), AsmPush (Register AX)]
+allocateStack :: Int -> [AsmInstruction]
+allocateStack i = [AsmBinary AsmSub Quadword (Imm i) (Register SP) | i /= 0]
+
+deallocateStack :: Int -> [AsmInstruction]
+deallocateStack i = [AsmBinary AsmAdd Quadword (Imm i) (Register SP) | i /= 0]
+
+getType :: AsmSymbolTable -> TACVal -> AsmType
+getType st val = case val of
+  TACVar name -> asmSTEntryToAsmType $ M.findWithDefault (Obj Quadword undefined) name st
+  TACConstant (ConstInt _) -> Longword
+  TACConstant (ConstLong _) -> Quadword
+  where
+    asmSTEntryToAsmType :: AsmSymbolTableEntry -> AsmType
+    asmSTEntryToAsmType (Obj t _) = t
+    asmSTEntryToAsmType _ = error "Invalid symbol table entry"
+
+passOperandToStack :: AsmSymbolTable -> TACVal -> [AsmInstruction]
+passOperandToStack st val = case (typeOfArg, asmArg) of
+  (Quadword, _) -> [AsmPush asmArg]
+  (_, Imm _) -> [AsmPush asmArg]
+  (_, Register _) -> [AsmPush asmArg]
+  _ -> [AsmMov Longword asmArg (Register AX), AsmPush (Register AX)]
+  where
+    asmArg = codegenTVal val
+    typeOfArg = getType st val
 
 relationalOpToCC :: TACBinaryOp -> AsmCondCode
 relationalOpToCC TACEqual = E
@@ -338,24 +442,48 @@ relationalOpToCC TACGreaterThan = G
 relationalOpToCC TACGreaterThanOrEqual = GE
 relationalOpToCC _ = error "Not a relational operator"
 
-codegenTTopLevel :: TACTopLevel -> AsmTopLevel
-codegenTTopLevel (TACFunction name glob args instructions) = AsmFunction name glob (move_register_args_to_params ++ move_stack_args_to_params ++ asm_instructions)
+codegenTTopLevel :: AsmSymbolTable -> TACTopLevel -> AsmTopLevel
+codegenTTopLevel st (TACFunction name glob args instructions) = AsmFunction name glob (move_register_args_to_params ++ move_stack_args_to_params ++ asm_instructions)
   where
     register_args = fmap TACVar (take (min (length args) 6) args)
     stack_args = fmap TACVar (drop (length register_args) args)
-    move_register_args_to_params = zipWith (\a r -> AsmMov (Register r) (codegenTVal a)) register_args [DI, SI, DX, CX, R8, R9]
-    move_stack_args_to_params = zipWith (\a i -> AsmMov (Stack (8 * i)) (codegenTVal a)) stack_args [2 ..]
-    asm_instructions = concatMap codegenTInstruction instructions
-codegenTTopLevel (TACStaticVariable name glob size) = AsmStaticVariable name glob size
+    stack_offsets = take (length stack_args) [16, 24 ..]
+    move_register_args_to_params = zipWith (\a r -> AsmMov (getType st a) (Register r) (codegenTVal a)) register_args [DI, SI, DX, CX, R8, R9]
+    move_stack_args_to_params = zipWith (\a i -> AsmMov (getType st a) (Stack i) (codegenTVal a)) stack_args stack_offsets
+    asm_instructions = concatMap (codegenTInstruction st) instructions
+codegenTTopLevel _ (TACStaticVariable name glob ctype iv) = AsmStaticVariable name glob (alignmentSize $ ctypeToAsmType ctype) iv
 
-codegenTProgram :: TACProgram -> AsmProgram
-codegenTProgram (TACProgram fs) = AsmProgram (fmap codegenTTopLevel fs)
+-- stack_arg_offset :: Offset -> [AsmType] -> [Offset]
+-- stack_arg_offset initialOffset args = stack_arg_offset' initialOffset args []
+--   where
+--     stack_arg_offset' :: Offset -> [AsmType] -> [Offset] -> [Offset]
+--     stack_arg_offset' offset [] acc = acc ++ [offset]
+--     stack_arg_offset' offset (t : ts) acc = stack_arg_offset' (alignedOffset + size t) ts (acc ++ [alignedOffset])
+--       where
+--         alignedOffset = roundAwayFromZero (alignmentSize t) offset
+
+ctypeToAsmType :: CType -> AsmType
+ctypeToAsmType CInt = Longword
+ctypeToAsmType CLong = Quadword
+ctypeToAsmType (CFunc {}) = error "Function type not supported"
+
+alignmentSize :: AsmType -> Int
+alignmentSize Longword = 4
+alignmentSize Quadword = 8
+alignmentSize _ = error "Invalid type"
+
+size :: AsmType -> Int
+size Longword = 4
+size Quadword = 8
+
+codegenTProgram :: AsmSymbolTable -> TACProgram -> AsmProgram
+codegenTProgram st (TACProgram fs) = AsmProgram (fmap (codegenTTopLevel st) fs)
 
 type StackOffset = Int
 
 type PseudoOffsetMap = Map String StackOffset
 
-type PseudoRegisterState = State (PseudoOffsetMap, Int, SymbolTable)
+type PseudoRegisterState = State (PseudoOffsetMap, Int, AsmSymbolTable)
 
 class PseudeRegisterPass a where
   pseudoRegisterPass :: a -> PseudoRegisterState a
@@ -363,29 +491,37 @@ class PseudeRegisterPass a where
 instance PseudeRegisterPass AsmOperand where
   pseudoRegisterPass :: AsmOperand -> PseudoRegisterState AsmOperand
   pseudoRegisterPass (Pseudo s) = do
-    (m, i, st) <- get
-    let pseudoIdentifier = Identifier s
-    case Data.Map.lookup pseudoIdentifier st of
-      Just (_, StaticAttr {}) -> return $ Data (namePrefix ++ s)
-      _ -> case Data.Map.lookup s m of
-        Just offset -> return $ Stack offset
+    (m, currentOffset, st) <- get
+    case Data.Map.lookup s st of
+      Just (Obj _ True) -> return $ Data (namePrefix ++ s)
+      Just (Obj t _) -> case Data.Map.lookup s m of
+        Just offset -> return $ Stack (-offset)
         Nothing -> do
-          let newMap = Data.Map.insert s (-(8 * (i + 1))) m
-          put (newMap, i + 1, st)
-          return $ Stack (-(8 * (i + 1)))
+          let alignedOffset = roundAwayFromZero (alignmentSize t) currentOffset
+              newOffset = alignedOffset + size t
+              newMap = Data.Map.insert s newOffset m
+          put (newMap, newOffset, st)
+          return $ Stack (-newOffset)
+      _ -> return $ Pseudo s
   pseudoRegisterPass x = return x
 
 instance PseudeRegisterPass AsmInstruction where
   pseudoRegisterPass :: AsmInstruction -> PseudoRegisterState AsmInstruction
   pseudoRegisterPass instruction = case instruction of
-    AsmMov src dst -> applyToTwo AsmMov src dst
-    AsmUnary op operand -> applyToOne (AsmUnary op) operand
-    AsmBinary op src dst -> applyToTwo (AsmBinary op) src dst
-    AsmIdiv operand -> applyToOne AsmIdiv operand
-    AsmCmp op1 op2 -> applyToTwo AsmCmp op1 op2
+    AsmMov t src dst -> applyToTwo (AsmMov t) src dst
+    AsmUnary op t operand -> applyToOne (AsmUnary op t) operand
+    AsmBinary op t src dst -> applyToTwo (AsmBinary op t) src dst
+    AsmIdiv t operand -> applyToOne (AsmIdiv t) operand
+    AsmCmp t op1 op2 -> applyToTwo (AsmCmp t) op1 op2
     AsmSetCC cc operand -> applyToOne (AsmSetCC cc) operand
     AsmPush operand -> applyToOne AsmPush operand
-    x -> return x
+    AsmMovsx src dst -> applyToTwo AsmMovsx src dst
+    AsmJmp _ -> return instruction
+    AsmJmpCC _ _ -> return instruction
+    AsmLabel _ -> return instruction
+    AsmCall _ -> return instruction
+    AsmRet -> return instruction
+    AsmCdq _ -> return instruction
     where
       applyToOne constructor arg = constructor <$> pseudoRegisterPass arg
       applyToTwo constructor arg1 arg2 = do
@@ -400,7 +536,7 @@ instance PseudeRegisterPass AsmTopLevel where
     return $ AsmFunction name glob instructions'
   pseudoRegisterPass x = return x
 
-replacePseudoRegisters :: SymbolTable -> AsmTopLevel -> (AsmTopLevel, StackOffset)
+replacePseudoRegisters :: AsmSymbolTable -> AsmTopLevel -> (AsmTopLevel, StackOffset)
 replacePseudoRegisters st p = (p', offset)
   where
     (p', (_, offset, _)) = runState (pseudoRegisterPass p) (Data.Map.empty, 0, st)
@@ -408,35 +544,63 @@ replacePseudoRegisters st p = (p', offset)
 addAllocateStack :: (AsmTopLevel, StackOffset) -> AsmTopLevel
 addAllocateStack (AsmFunction name glob instrs, offset) = AsmFunction name glob newInstrs
   where
-    offset' = if even offset then offset else offset + 1
-    newInstrs = AsmAllocateStack (offset' * 8) : instrs
+    offset' = roundAwayFromZero 16 offset
+    newInstrs = allocateStack offset' ++ instrs
 addAllocateStack x = fst x
 
-pseudoFix :: SymbolTable -> AsmTopLevel -> AsmTopLevel
+pseudoFix :: AsmSymbolTable -> AsmTopLevel -> AsmTopLevel
 pseudoFix st = addAllocateStack . replacePseudoRegisters st
 
 fixInstr :: AsmInstruction -> [AsmInstruction]
-fixInstr (AsmMov src dst)
-  | isMemoryOperand src && isMemoryOperand dst =
-      [ AsmMov src (Register R10),
-        AsmMov (Register R10) dst
+fixInstr (AsmMov Longword (Imm i) dst)
+  | i > 0x7FFFFFFF || i < -0x80000000 =
+      fixInstr $ AsmMov Longword (Imm (castLongToInt i)) dst
+fixInstr (AsmMov Quadword (Imm i) dst)
+  | (i > 0x7FFFFFFF || i < -0x80000000) && isMemoryOperand dst =
+      [ AsmMov Quadword (Imm i) (Register R10),
+        AsmMov Quadword (Register R10) dst
       ]
-  | otherwise = [AsmMov src dst]
-fixInstr (AsmIdiv (Imm i)) =
-  [ AsmMov (Imm i) (Register R10),
-    AsmIdiv (Register R10)
-  ]
-fixInstr (AsmCmp src (Imm i)) =
-  [ AsmMov (Imm i) (Register R11),
-    AsmCmp src (Register R11)
-  ]
-fixInstr (AsmCmp src dst)
+fixInstr (AsmMov t src dst)
   | isMemoryOperand src && isMemoryOperand dst =
-      [ AsmMov src (Register R10),
-        AsmCmp (Register R10) dst
+      [ AsmMov t src (Register R10),
+        AsmMov t (Register R10) dst
       ]
-  | otherwise = [AsmCmp src dst]
-fixInstr instr@(AsmBinary op src dst)
+  | otherwise = [AsmMov t src dst]
+fixInstr (AsmIdiv t (Imm i)) =
+  [ AsmMov t (Imm i) (Register R10),
+    AsmIdiv t (Register R10)
+  ]
+fixInstr (AsmCmp Quadword (Imm i) dst)
+  | i > 0x7FFFFFFF || i < -0x80000000 =
+      AsmMov Quadword (Imm i) (Register R10)
+        : fixInstr (AsmCmp Quadword (Register R10) dst)
+fixInstr (AsmCmp t src (Imm i)) =
+  [ AsmMov t (Imm i) (Register R11),
+    AsmCmp t src (Register R11)
+  ]
+fixInstr (AsmCmp t src dst)
+  | isMemoryOperand src && isMemoryOperand dst =
+      [ AsmMov t src (Register R10),
+        AsmCmp t (Register R10) dst
+      ]
+  | otherwise = [AsmCmp t src dst]
+fixInstr (AsmPush (Imm i))
+  | i > 0x7FFFFFFF || i < -0x80000000 =
+      [ AsmMov Quadword (Imm i) (Register R10),
+        AsmPush (Register R10)
+      ]
+fixInstr (AsmBinary op Quadword (Imm i) dst)
+  | ( op == AsmAdd
+        || op == AsmSub
+        || op == AsmMult
+        || op == AsmAnd
+        || op == AsmOr
+        || op == AsmXor
+    )
+      && not (is32BitRange i) =
+      AsmMov Quadword (Imm i) (Register R10)
+        : fixInstr (AsmBinary op Quadword (Register R10) dst)
+fixInstr instr@(AsmBinary op t src dst)
   | isMemoryOperand src
       && isMemoryOperand dst
       && ( op == AsmAdd
@@ -445,25 +609,35 @@ fixInstr instr@(AsmBinary op src dst)
              || op == AsmAnd
              || op == AsmOr
          ) =
-      [ AsmMov src (Register R10),
-        AsmBinary op (Register R10) dst
+      [ AsmMov t src (Register R10),
+        AsmBinary op t (Register R10) dst
       ]
   | isMemoryOperand dst && op == AsmMult =
-      [ AsmMov dst (Register R11),
-        AsmBinary op src (Register R11),
-        AsmMov (Register R11) dst
+      [ AsmMov t dst (Register R11),
+        AsmBinary op t src (Register R11),
+        AsmMov t (Register R11) dst
       ]
   | isMemoryOperand src && (op == AsmSar || op == AsmSal || op == AsmMult) =
-      [ AsmMov src (Register CX),
-        AsmBinary op (Register CX) dst
+      [ AsmMov t src (Register CX),
+        AsmBinary op t (Register CX) dst
       ]
   | otherwise = [instr]
+fixInstr (AsmMovsx src dst) = srcInstr ++ [AsmMovsx src' dst'] ++ dstInstr
+  where
+    dst' = if isMemoryOperand dst then Register R11 else dst
+    src' = if isImmediateOperand src then Register R10 else src
+    srcInstr = [AsmMov Longword src src' | isImmediateOperand src]
+    dstInstr = [AsmMov Quadword dst' dst | isMemoryOperand dst]
 fixInstr x = [x]
 
 isMemoryOperand :: AsmOperand -> Bool
 isMemoryOperand (Stack _) = True
 isMemoryOperand (Data _) = True
 isMemoryOperand _ = False
+
+isImmediateOperand :: AsmOperand -> Bool
+isImmediateOperand (Imm _) = True
+isImmediateOperand _ = False
 
 removeInvalidInstructions :: AsmProgram -> AsmProgram
 removeInvalidInstructions (AsmProgram fs) = AsmProgram (fmap fixInvalidHelper fs)
@@ -474,11 +648,9 @@ removeInvalidInstructions (AsmProgram fs) = AsmProgram (fmap fixInvalidHelper fs
     fixInvalidHelper x = x
 
 codegen :: (TACProgram, SymbolTable) -> AsmProgram
-codegen (program, st) =
-  removeInvalidInstructions
-    . (\(AsmProgram fs) -> AsmProgram (fmap (pseudoFix st) fs))
-    . codegenTProgram
-    $ program
-
-functionNameList :: AsmProgram -> [String]
-functionNameList (AsmProgram fs) = fmap (\(AsmFunction name _ _) -> name) fs
+codegen (program, symbolTable) = processedFunctions
+  where
+    asmSymbolTable = stToAsmST symbolTable
+    initialAsm = codegenTProgram asmSymbolTable program
+    processedFunctions = case initialAsm of
+      AsmProgram fs -> removeInvalidInstructions . AsmProgram $ map (pseudoFix asmSymbolTable) fs

@@ -25,6 +25,7 @@ library
       Pass
       Tacky
       TypeCheck
+      Util
       VarResolve
   other-modules:
       Paths_my_cc

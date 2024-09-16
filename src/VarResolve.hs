@@ -19,28 +19,27 @@ class Resolve a where
   resolve :: a -> VarResolve a
 
 declareVarT :: Maybe StorageClass -> Identifier -> VarResolve Identifier
-declareVarT sc identifier@(Identifier name) = do
+declareVarT sc name = do
   (scope@(ScopeVarMap varMap parent), num) <- get
-  let oldDecl = lookupVarLink identifier scope
-  let inCurrentScope = isDeclaredInCurrentScope identifier scope
+  let oldDecl = lookupVarLink name scope
+  let inCurrentScope = isDeclaredInCurrentScope name scope
   case (inCurrentScope, oldDecl, sc) of
     (True, Just (_, _), Nothing) -> lift . Left $ "Variable " ++ name ++ " already declared."
     (True, Just (_, False), _) -> lift . Left $ "Conflicting linkage for variable: " ++ name
     (True, Just _, Just Static) -> lift . Left $ "Conflicting linkage for variable: " ++ name
     _ -> return ()
-  let identifier' = Identifier $ name ++ "." ++ show num
-  put (ScopeVarMap (M.insert identifier (identifier', sc == Just Extern) varMap) parent, num + 1)
+  let identifier' = name ++ "." ++ show num
+  put (ScopeVarMap (M.insert name (identifier', sc == Just Extern) varMap) parent, num + 1)
   return identifier'
 
 declareFunT :: Identifier -> VarResolve Identifier
-declareFunT identifier@(Identifier name) = do
+declareFunT name = do
   (scope@(ScopeVarMap varMap parent), num) <- get
-  case (lookupVarLink identifier scope, isDeclaredInCurrentScope identifier scope) of
+  case (lookupVarLink name scope, isDeclaredInCurrentScope name scope) of
     (Just (_, False), True) -> lift $ Left $ "Function " ++ name ++ " already declared."
     _ -> do
-      let identifier' = identifier
-      put (ScopeVarMap (M.insert identifier (identifier', True) varMap) parent, num)
-      return identifier'
+      put (ScopeVarMap (M.insert name (name, True) varMap) parent, num)
+      return name
 
 isDeclared :: Identifier -> ScopeVarMap -> Bool
 isDeclared identifier (ScopeVarMap varMap parent) =
@@ -72,17 +71,17 @@ declareVarTFileScope identifier = do
 
 instance Resolve VarDecl where
   resolve :: VarDecl -> VarResolve VarDecl
-  resolve (VarDecl name expr sc) = do
+  resolve (VarDecl name expr vtype sc) = do
     (scope@(ScopeVarMap _ outerScope), _) <- get
     case outerScope of
-      Nothing -> VarDecl <$> declareVarTFileScope name <*> traverse resolve expr <*> pure sc
+      Nothing -> VarDecl <$> declareVarTFileScope name <*> traverse resolve expr <*> pure vtype <*> pure sc
       Just _ -> do
         case (lookupVarLink name scope, isDeclaredInCurrentScope name scope, sc) of
           (Just (_, False), True, _) -> lift $ Left $ "Conflicting local variable declaration: " ++ show name
           _ -> return ()
         if sc == Just Extern
-          then VarDecl <$> declareVarTFileScope name <*> traverse resolve expr <*> pure sc
-          else VarDecl <$> declareVarT sc name <*> traverse resolve expr <*> pure sc
+          then VarDecl <$> declareVarTFileScope name <*> traverse resolve expr <*> pure vtype <*> pure sc
+          else VarDecl <$> declareVarT sc name <*> traverse resolve expr <*> pure vtype <*> pure sc
 
 restoreOuterScope :: VarResolve ()
 restoreOuterScope = do
@@ -93,7 +92,7 @@ restoreOuterScope = do
 
 instance Resolve FuncDecl where
   resolve :: FuncDecl -> VarResolve FuncDecl
-  resolve (FuncDecl name args block sc) = do
+  resolve (FuncDecl name args block ftype sc) = do
     (ScopeVarMap _ outerScope, _) <- get
     when (isJust outerScope && isJust block) $ lift $ Left "Nested function definition not allowed."
     when (isJust outerScope && sc == Just Static) $ lift $ Left "Static function definition not allowed in block scope."
@@ -104,11 +103,11 @@ instance Resolve FuncDecl where
     case block of
       Nothing -> do
         restoreOuterScope
-        return $ FuncDecl name' args' Nothing sc
+        return $ FuncDecl name' args' Nothing ftype sc
       Just (Block items) -> do
         items' <- traverse resolve items
         restoreOuterScope
-        return $ FuncDecl name' args' (Just (Block items')) sc
+        return $ FuncDecl name' args' (Just (Block items')) ftype sc
 
 instance Resolve Block where
   resolve :: Block -> VarResolve Block
@@ -145,32 +144,37 @@ instance Resolve Stmt where
       Just scope' -> put (scope', num')
     return $ ForStmt label forInit' cond' iter' block'
   resolve (SwitchStmt l s d e stmt) = SwitchStmt l s d <$> resolve e <*> resolve stmt
-  resolve (CaseStmt l e@(Constant (IntLiteral _)) s) = CaseStmt l e <$> resolve s
+  resolve (CaseStmt l e@(TypedExpr (Constant _) _) s) = CaseStmt l e <$> resolve s
   resolve (CaseStmt {}) = lift $ Left "Case statement must have an integer literal."
   resolve (DefaultStmt l) = return $ DefaultStmt l
 
 instance Resolve ForInit where
   resolve :: ForInit -> VarResolve ForInit
-  resolve (InitDecl decl@(VarDecl _ _ Nothing)) = InitDecl <$> resolve decl
+  resolve (InitDecl decl@(VarDecl _ _ _ Nothing)) = InitDecl <$> resolve decl
   resolve (InitDecl _) = lift $ Left "for loop initializer cannot have storage class."
   resolve (InitExpr e) = InitExpr <$> traverse resolve e
 
+instance Resolve TypedExpr where
+  resolve :: TypedExpr -> VarResolve TypedExpr
+  resolve (TypedExpr expr t) = TypedExpr <$> resolve expr <*> pure t
+
 instance Resolve Expr where
   resolve :: Expr -> VarResolve Expr
-  resolve (Assignment op l@(Var _) r) = Assignment op <$> resolve l <*> resolve r
+  resolve (Assignment op l@(TypedExpr (Var _) _) r) = Assignment op <$> resolve l <*> resolve r
   resolve (Assignment {}) = lift $ Left "Invalid lvalue."
   resolve (Var identifier) = Var <$> lookupT identifier
-  resolve (Unary PreDecrement e@(Var _)) = Unary PreDecrement <$> resolve e
-  resolve (Unary PreIncrement e@(Var _)) = Unary PreIncrement <$> resolve e
+  resolve (Unary PreDecrement e@(TypedExpr (Var _) _)) = Unary PreDecrement <$> resolve e
+  resolve (Unary PreIncrement e@(TypedExpr (Var _) _)) = Unary PreIncrement <$> resolve e
   resolve (Unary PreDecrement _) = lift $ Left "Invalid pre-decrement expression."
   resolve (Unary PreIncrement _) = lift $ Left "Invalid pre-increment expression."
   resolve (Unary op e) = Unary op <$> resolve e
   resolve (Binary op l r) = Binary op <$> resolve l <*> resolve r
-  resolve (PostFix e@(Var _) op) = PostFix <$> resolve e <*> pure op
+  resolve (PostFix e@(TypedExpr (Var _) _) op) = PostFix <$> resolve e <*> pure op
   resolve (PostFix e _) = lift $ Left $ "Invalid post-fix expression: " ++ show e
   resolve (Constant i) = return $ Constant i
   resolve (Conditional c t e) = Conditional <$> resolve c <*> resolve t <*> resolve e
   resolve (FunctionCall f args) = FunctionCall <$> lookupT f <*> traverse resolve args
+  resolve (Cast t e) = Cast t <$> resolve e
 
 instance Resolve Program where
   resolve :: Program -> VarResolve Program

@@ -29,11 +29,11 @@ instance LabelResolve Decl where
 
 instance LabelResolve FuncDecl where
   labelResolve :: FuncDecl -> Either String FuncDecl
-  labelResolve (FuncDecl name@(Identifier fname) args block sc) = do
+  labelResolve (FuncDecl fname args block ftype sc) = do
     let p = evalStateT (traverse (resolveP1 fname) block >>= traverse resolveP2) S.empty
     case p of
       Left err -> Left err
-      Right p' -> return $ FuncDecl name args p' sc
+      Right p' -> return $ FuncDecl fname args p' ftype sc
 
 class LabelResolvePass1 a where
   resolveP1 :: String -> a -> LabelStateT a
@@ -49,8 +49,8 @@ instance LabelResolvePass1 BlockItem where
 
 instance LabelResolvePass1 Stmt where
   resolveP1 :: String -> Stmt -> LabelStateT Stmt
-  resolveP1 fname (LabeledStmt (Identifier label') stmt) = do
-    let label = Identifier $ fname ++ "_fun_" ++ label'
+  resolveP1 fname (LabeledStmt label' stmt) = do
+    let label = fname ++ "_fun_" ++ label'
     labels <- get
     if S.member label labels
       then lift $ Left $ "Label " ++ show label ++ " already declared"
@@ -64,7 +64,7 @@ instance LabelResolvePass1 Stmt where
   resolveP1 fname (ForStmt label forInit cond iter block) = ForStmt label forInit cond iter <$> resolveP1 fname block
   resolveP1 fname (SwitchStmt label set def expr block) = SwitchStmt label set def expr <$> resolveP1 fname block
   resolveP1 fname (CaseStmt label expr stmt) = CaseStmt label expr <$> resolveP1 fname stmt
-  resolveP1 fname (GotoStmt (Identifier label)) = return . GotoStmt . Identifier $ fname ++ "_fun_" ++ label
+  resolveP1 fname (GotoStmt label) = return . GotoStmt $ fname ++ "_fun_" ++ label
   resolveP1 _ stmt = return stmt
 
 instance LabelResolvePass1 VarDecl where
@@ -85,7 +85,7 @@ instance LabelResolvePass2 Decl where
 
 instance LabelResolvePass2 FuncDecl where
   resolveP2 :: FuncDecl -> LabelStateT FuncDecl
-  resolveP2 (FuncDecl name args block sc) = FuncDecl name args <$> traverse resolveP2 block <*> return sc
+  resolveP2 (FuncDecl name args block ftype sc) = FuncDecl name args <$> traverse resolveP2 block <*> pure ftype <*> pure sc
 
 instance LabelResolvePass2 Block where
   resolveP2 :: Block -> LabelStateT Block

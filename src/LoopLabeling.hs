@@ -16,7 +16,7 @@ instance Show LLabelType where
 data LLabel = LLabel LLabelType Int deriving (Show, Eq)
 
 llabelToIdentifier :: LLabel -> Identifier
-llabelToIdentifier (LLabel l num) = Identifier $ show l ++ show num
+llabelToIdentifier (LLabel l num) = show l ++ show num
 
 data LScope = LScope LLabel (Maybe LScope) deriving (Show, Eq)
 
@@ -56,7 +56,7 @@ instance LoopLabelingPass Program where
 
 instance LoopLabelingPass FuncDecl where
   labelLoops :: FuncDecl -> LoopLabelingT FuncDecl
-  labelLoops (FuncDecl name args block sc) = FuncDecl name args <$> traverse labelLoops block <*> pure sc
+  labelLoops (FuncDecl name args block ftype sc) = FuncDecl name args <$> traverse labelLoops block <*> pure ftype <*> pure sc
 
 instance LoopLabelingPass Decl where
   labelLoops :: Decl -> LoopLabelingT Decl

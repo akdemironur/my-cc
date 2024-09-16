@@ -18,6 +18,7 @@ import Prelude hiding (lex)
 data Token
   = TIdentifier String
   | TConstant Int
+  | TLongConstant Int
   | TOpenParen
   | TCloseParen
   | TOpenBrace
@@ -75,6 +76,7 @@ data Token
   | TComma
   | TExternKeyword
   | TStaticKeyword
+  | TLongKeyword
   deriving (Show, Eq)
 
 keywords :: [String]
@@ -94,7 +96,8 @@ keywords =
     "case",
     "default",
     "extern",
-    "static"
+    "static",
+    "long"
   ]
 
 identifierRegex :: String
@@ -152,6 +155,7 @@ isAssignmentOp _ = False
 
 isSpecifier :: Token -> Bool
 isSpecifier TIntKeyword = True
+isSpecifier TLongKeyword = True
 isSpecifier TStaticKeyword = True
 isSpecifier TExternKeyword = True
 isSpecifier _ = False
@@ -174,6 +178,7 @@ tokenRegexes =
     ("\\A/(?!=)", const TSlash),
     ("\\A%(?!=)", const TPercent),
     ("\\A[0-9]+\\b", TConstant . read),
+    ("\\A[0-9]+(l|L)\\b", TLongConstant . read . init),
     ("\\A\\(", const TOpenParen),
     ("\\A\\)", const TCloseParen),
     ("\\A{", const TOpenBrace),
@@ -216,7 +221,8 @@ tokenRegexes =
     ("\\Adefault\\b", const TDefaultKeyword),
     ("\\A,", const TComma),
     ("\\Aextern\\b", const TExternKeyword),
-    ("\\Astatic\\b", const TStaticKeyword)
+    ("\\Astatic\\b", const TStaticKeyword),
+    ("\\Along\\b", const TLongKeyword)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)

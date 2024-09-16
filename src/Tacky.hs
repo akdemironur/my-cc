@@ -1,13 +1,17 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module Tacky where
 
 import AST
+import Control.Applicative (liftA2)
 import Control.Monad.State
 import Data.Foldable
 import qualified Data.Map as M
-import Pass
+import Data.Maybe (mapMaybe)
 import TypeCheck
+import Util
 
 type TACIdentifier = String
 
@@ -15,19 +19,19 @@ newtype TACProgram = TACProgram [TACTopLevel] deriving (Show, Eq)
 
 data TACTopLevel
   = TACFunction TACIdentifier Bool [TACIdentifier] [TACInstruction]
-  | TACStaticVariable TACIdentifier Bool Int
+  | TACStaticVariable TACIdentifier Bool CType StaticInit
   deriving (Show, Eq)
 
 breakLabel :: Maybe Identifier -> String
-breakLabel (Just (Identifier name)) = name ++ ".break"
+breakLabel (Just name) = name ++ ".break"
 breakLabel Nothing = error "BreakLabel: This shouldnt happen"
 
 continueLabel :: Maybe Identifier -> String
-continueLabel (Just (Identifier name)) = name ++ ".continue"
+continueLabel (Just name) = name ++ ".continue"
 continueLabel Nothing = error "ContinueLabel: This shouldnt happen"
 
 startLabel :: Maybe Identifier -> String
-startLabel (Just (Identifier name)) = name ++ ".start"
+startLabel (Just name) = name ++ ".start"
 startLabel Nothing = error "StartLabel: This shouldnt happen"
 
 data TACInstruction
@@ -40,6 +44,8 @@ data TACInstruction
   | TACJumpIfNotZero TACVal TACIdentifier
   | TACLabel TACIdentifier
   | TACFuncCall TACIdentifier [TACVal] TACVal
+  | TACSignExtend TACVal TACVal
+  | TACTruncate TACVal TACVal
   deriving (Eq)
 
 instance Show TACInstruction where
@@ -53,9 +59,11 @@ instance Show TACInstruction where
   show (TACJumpIfNotZero val label) = "JumpIfNotZero(" ++ show val ++ ", " ++ label ++ ")"
   show (TACLabel label) = "Label(" ++ label ++ ")"
   show (TACFuncCall name args dst) = "FuncCall(" ++ name ++ ", " ++ show args ++ ", " ++ show dst ++ ")"
+  show (TACSignExtend src dst) = "SignExtend(" ++ show src ++ ", " ++ show dst ++ ")"
+  show (TACTruncate src dst) = "Truncate(" ++ show src ++ ", " ++ show dst ++ ")"
 
 data TACVal
-  = TACConstant Int
+  = TACConstant Const
   | TACVar TACIdentifier
   deriving (Eq)
 
@@ -163,133 +171,169 @@ tackyAssignOp _ = error "TackyAssignOp: This shouldnt happen"
 
 type GlobalNameMap = M.Map String Int
 
-type InstrSt = State (GlobalNameMap, [TACInstruction])
+type InstrSt = State (GlobalNameMap, [TACInstruction], SymbolTable)
 
 class Emittable a where
   emitTacky :: a -> InstrSt TACVal
 
 globalNameGenerator :: String -> InstrSt String
 globalNameGenerator prefix = do
-  (globMap, instr) <- get
+  (globMap, instr, st) <- get
   let num = M.findWithDefault 0 prefix globMap
   let newNum = num + 1
-  put (M.insert prefix newNum globMap, instr)
+  put (M.insert prefix newNum globMap, instr, st)
   return $ prefix ++ show newNum
 
-instance Emittable Expr where
-  emitTacky :: Expr -> InstrSt TACVal
-  emitTacky (Constant (IntLiteral i)) = return $ TACConstant i
-  emitTacky (Var (Identifier name)) = return $ TACVar name
-  emitTacky (Binary And left right) = do
+makeTemporaryVariable :: String -> Maybe CType -> InstrSt String
+makeTemporaryVariable prefix (Just ty) = do
+  name <- globalNameGenerator prefix
+  (num, instr, st) <- get
+  let st' = M.insert name (ty, LocalAttr) st
+  put (num, instr, st')
+  return name
+makeTemporaryVariable _ Nothing = error "Untyped temporary variable, this shouldnt happen"
+
+instance Emittable TypedExpr where
+  emitTacky :: TypedExpr -> InstrSt TACVal
+  emitTacky (TypedExpr (Constant i) _) = return $ TACConstant i
+  emitTacky (TypedExpr (Var name) _) = return $ TACVar name
+  emitTacky (TypedExpr (Binary And left right) ty) = do
     false_label <- globalNameGenerator "false."
     end_label <- globalNameGenerator "end."
-    result <- globalNameGenerator "result."
+    result <- makeTemporaryVariable "result." ty
     v1 <- emitTacky left
-    (num, instr) <- get
-    put (num, instr ++ [TACJumpIfZero v1 false_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJumpIfZero v1 false_label], st)
     v2 <- emitTacky right
-    (num', instr') <- get
+    (num', instr', st') <- get
     put
       ( num',
         instr'
           ++ [ TACJumpIfZero v2 false_label,
-               TACCopy (TACConstant 1) (TACVar result),
+               TACCopy (TACConstant (ConstInt 1)) (TACVar result),
                TACJump end_label,
                TACLabel false_label,
-               TACCopy (TACConstant 0) (TACVar result),
+               TACCopy (TACConstant (ConstInt 0)) (TACVar result),
                TACLabel end_label
-             ]
+             ],
+        st'
       )
     return $ TACVar result
-  emitTacky (Binary Or left right) = do
+  emitTacky (TypedExpr (Binary Or left right) ty) = do
     true_label <- globalNameGenerator "true."
     end_label <- globalNameGenerator "end."
-    result <- globalNameGenerator "result."
+    result <- makeTemporaryVariable "result." ty
     v1 <- emitTacky left
-    (num, instr) <- get
-    put (num, instr ++ [TACJumpIfNotZero v1 true_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJumpIfNotZero v1 true_label], st)
     v2 <- emitTacky right
-    (num', instr') <- get
+    (num', instr', st') <- get
     put
       ( num',
         instr'
           ++ [ TACJumpIfNotZero v2 true_label,
-               TACCopy (TACConstant 0) (TACVar result),
+               TACCopy (TACConstant (ConstInt 0)) (TACVar result),
                TACJump end_label,
                TACLabel true_label,
-               TACCopy (TACConstant 1) (TACVar result),
+               TACCopy (TACConstant (ConstInt 1)) (TACVar result),
                TACLabel end_label
-             ]
+             ],
+        st'
       )
     return $ TACVar result
-  emitTacky (Unary op e)
+  emitTacky (TypedExpr (Unary op e) ty)
     | op == PreDecrement || op == PreIncrement = do
         src <- emitTacky e
-        (num, instr) <- get
-        put (num, instr ++ [TACBinary (tackyPreOp op) src (TACConstant 1) src])
+        (num, instr, st) <- get
+        let typedConst = case ty of
+              Just CInt -> ConstInt 1
+              Just CLong -> ConstLong 1
+              _ -> error "Untyped unary This shouldnt happen"
+        put (num, instr ++ [TACBinary (tackyPreOp op) src (TACConstant typedConst) src], st)
         return src
     | otherwise = do
         src <- emitTacky e
-        dst_name <- globalNameGenerator "tmp."
-        (num, instr) <- get
-        put (num, instr ++ [TACUnary (tackyOp op) src (TACVar dst_name)])
+        dst_name <- makeTemporaryVariable "tmp." ty
+        (num, instr, st) <- get
+        put (num, instr ++ [TACUnary (tackyOp op) src (TACVar dst_name)], st)
         return $ TACVar dst_name
-  emitTacky (Binary op left right) = do
+  emitTacky (TypedExpr (Binary op left right) ty) = do
     left_val <- emitTacky left
     right_val <- emitTacky right
-    dst_name <- globalNameGenerator "tmp."
-    (num, instr) <- get
-    put (num, instr ++ [TACBinary (tackyBinOp op) left_val right_val (TACVar dst_name)])
+    dst_name <- makeTemporaryVariable "tmp." ty
+    (num, instr, st) <- get
+    put (num, instr ++ [TACBinary (tackyBinOp op) left_val right_val (TACVar dst_name)], st)
     return $ TACVar dst_name
-  emitTacky (PostFix e op) = do
+  emitTacky (TypedExpr (PostFix e op) ty) = do
     src <- emitTacky e
-    dst_name <- globalNameGenerator "tmp."
-    (num, instr) <- get
-    put (num, instr ++ [TACCopy src (TACVar dst_name), TACBinary (tackyPostOp op) src (TACConstant 1) src])
+    dst_name <- makeTemporaryVariable "tmp." ty
+    (num, instr, st) <- get
+    let typedConst = case ty of
+          Just CInt -> ConstInt 1
+          Just CLong -> ConstLong 1
+          _ -> error "Unary: This shouldnt happen"
+    put (num, instr ++ [TACCopy src (TACVar dst_name), TACBinary (tackyPostOp op) src (TACConstant typedConst) src], st)
     return $ TACVar dst_name
-  emitTacky (Assignment Assign l r) = do
+  emitTacky (TypedExpr (Assignment Assign l r) _) = do
     lhs <- emitTacky l
     rhs <- emitTacky r
-    (num, instr) <- get
-    put (num, instr ++ [TACCopy rhs lhs])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACCopy rhs lhs], st)
     return lhs
-  emitTacky (Assignment op l r) = do
-    lhs <- emitTacky l
-    rhs <- emitTacky r
-    dst_name <- globalNameGenerator "tmp."
-    (num, instr) <- get
-    put (num, instr ++ [TACBinary (tackyAssignOp op) lhs rhs (TACVar dst_name), TACCopy (TACVar dst_name) lhs])
-    return lhs
-  emitTacky (Conditional cond thenExpr elseExpr) = do
+  emitTacky e@(TypedExpr (Assignment op l r) ty)
+    | isCompoundArithmeticOp op
+        || isCompoundBitwiseOp op =
+        emitTackyCompoundWidening e
+    | otherwise = do
+        lhs <- emitTacky l
+        rhs <- emitTacky r
+        dst_name <- makeTemporaryVariable "tmp." ty
+        (num, instr, st) <- get
+        put (num, instr ++ [TACBinary (tackyAssignOp op) lhs rhs (TACVar dst_name), TACCopy (TACVar dst_name) lhs], st)
+        return lhs
+  emitTacky (TypedExpr (Conditional cond thenExpr elseExpr) ty) = do
     cond_val <- emitTacky cond
     else_label <- globalNameGenerator "else."
     end_label <- globalNameGenerator "end."
-    dst_name <- globalNameGenerator "tmp."
-    (num, instr) <- get
-    put (num, instr ++ [TACJumpIfZero cond_val else_label])
+    dst_name <- makeTemporaryVariable "tmp." ty
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJumpIfZero cond_val else_label], st)
     then_val <- emitTacky thenExpr
-    (num', instr') <- get
-    put (num', instr' ++ [TACCopy then_val (TACVar dst_name), TACJump end_label, TACLabel else_label])
+    (num', instr', st') <- get
+    put (num', instr' ++ [TACCopy then_val (TACVar dst_name), TACJump end_label, TACLabel else_label], st')
     else_val <- emitTacky elseExpr
-    (num'', instr'') <- get
-    put (num'', instr'' ++ [TACCopy else_val (TACVar dst_name), TACLabel end_label])
+    (num'', instr'', st'') <- get
+    put (num'', instr'' ++ [TACCopy else_val (TACVar dst_name), TACLabel end_label], st'')
     return $ TACVar dst_name
-  emitTacky (FunctionCall (Identifier name) args) = do
+  emitTacky (TypedExpr (FunctionCall name args) ty) = do
     arg_vals <- traverse emitTacky args
-    dst_name <- globalNameGenerator "tmp."
-    (num, instr) <- get
-    put (num, instr ++ [TACFuncCall name arg_vals (TACVar dst_name)])
+    dst_name <- makeTemporaryVariable "tmp." ty
+    (num, instr, st) <- get
+    put (num, instr ++ [TACFuncCall name arg_vals (TACVar dst_name)], st)
     return $ TACVar dst_name
+  emitTacky (TypedExpr (Cast targetType e) ty) = do
+    src <- emitTacky e
+    if ty == tyType e
+      then return src
+      else do
+        dst_name <- makeTemporaryVariable "tmp." ty
+        (num, instr, st) <- get
+        let castInstr = case targetType of
+              CInt -> TACTruncate
+              CLong -> TACSignExtend
+              _ -> error "Cast: This shouldnt happen"
+        put (num, instr ++ [castInstr src (TACVar dst_name)], st)
+        return $ TACVar dst_name
 
 instance Emittable VarDecl where
   emitTacky :: VarDecl -> InstrSt TACVal
-  emitTacky (VarDecl (Identifier name) _ (Just Static)) = return $ TACVar name
-  emitTacky (VarDecl (Identifier name) (Just e) _) = do
+  emitTacky (VarDecl name _ _ (Just Static)) = return $ TACVar name
+  emitTacky (VarDecl name (Just e) _ _) = do
     val <- emitTacky e
-    (num, instr) <- get
-    put (num, instr ++ [TACCopy val (TACVar name)])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACCopy val (TACVar name)], st)
     return val
-  emitTacky (VarDecl (Identifier name) Nothing _) = return $ TACVar name
+  emitTacky (VarDecl name Nothing _ _) = return $ TACVar name
 
 instance Emittable Stmt where
   emitTacky :: Stmt -> InstrSt TACVal
@@ -303,146 +347,150 @@ instance Emittable Stmt where
   emitTacky (SwitchStmt Nothing _ _ _ _) = error "Switch without label, this shouldnt happen"
   emitTacky (ReturnStmt e) = do
     src <- emitTacky e
-    (num, instr) <- get
-    put (num, instr ++ [TACReturn src])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACReturn src], st)
     return src
   emitTacky (ExprStmt e) = emitTacky e
-  emitTacky NullStmt = return $ TACConstant 0
+  emitTacky NullStmt = return $ TACConstant (ConstInt 0)
   emitTacky (IfStmt cond thenStmt (Just elseStmt)) = do
     cond_val <- emitTacky cond
     else_label <- globalNameGenerator "else."
     end_label <- globalNameGenerator "end."
-    (num, instr) <- get
-    put (num, instr ++ [TACJumpIfZero cond_val else_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJumpIfZero cond_val else_label], st)
     _ <- emitTacky thenStmt
-    (num', instr') <- get
-    put (num', instr' ++ [TACJump end_label, TACLabel else_label])
+    (num', instr', st') <- get
+    put (num', instr' ++ [TACJump end_label, TACLabel else_label], st')
     _ <- emitTacky elseStmt
-    (num'', instr'') <- get
-    put (num'', instr'' ++ [TACLabel end_label])
-    return $ TACConstant 0
+    (num'', instr'', st'') <- get
+    put (num'', instr'' ++ [TACLabel end_label], st'')
+    return $ TACConstant (ConstInt 0)
   emitTacky (IfStmt cond thenStmt Nothing) = do
     cond_val <- emitTacky cond
     end_label <- globalNameGenerator "end."
-    (num, instr) <- get
-    put (num, instr ++ [TACJumpIfZero cond_val end_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJumpIfZero cond_val end_label], st)
     _ <- emitTacky thenStmt
-    (num', instr') <- get
-    put (num', instr' ++ [TACLabel end_label])
-    return $ TACConstant 0
-  emitTacky (LabeledStmt (Identifier name) stmt) = do
-    (num, instr) <- get
-    put (num, instr ++ [TACLabel $ name ++ ".label"])
+    (num', instr', st') <- get
+    put (num', instr' ++ [TACLabel end_label], st')
+    return $ TACConstant (ConstInt 0)
+  emitTacky (LabeledStmt name stmt) = do
+    (num, instr, st) <- get
+    put (num, instr ++ [TACLabel $ name ++ ".label"], st)
     _ <- emitTacky stmt
-    return $ TACConstant 0
-  emitTacky (GotoStmt (Identifier name)) = do
-    (num, instr) <- get
-    put (num, instr ++ [TACJump $ name ++ ".label"])
-    return $ TACConstant 0
+    return $ TACConstant (ConstInt 0)
+  emitTacky (GotoStmt name) = do
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJump $ name ++ ".label"], st)
+    return $ TACConstant (ConstInt 0)
   emitTacky (CompoundStmt block) = emitTacky block
   emitTacky (WhileStmt label cond block) = do
     let continue_label = continueLabel label
     let break_label = breakLabel label
-    (num, instr) <- get
-    put (num, instr ++ [TACLabel continue_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACLabel continue_label], st)
     cond_val <- emitTacky cond
-    (num', instr') <- get
-    put (num', instr' ++ [TACJumpIfZero cond_val break_label])
+    (num', instr', st') <- get
+    put (num', instr' ++ [TACJumpIfZero cond_val break_label], st')
     _ <- emitTacky block
-    (num'', instr'') <- get
-    put (num'', instr'' ++ [TACJump continue_label, TACLabel break_label])
-    return $ TACConstant 0
+    (num'', instr'', st'') <- get
+    put (num'', instr'' ++ [TACJump continue_label, TACLabel break_label], st'')
+    return $ TACConstant (ConstInt 0)
   emitTacky (DoWhileStmt label block cond) = do
     let start_label = startLabel label
     let break_label = breakLabel label
     let continue_label = continueLabel label
-    (num, instr) <- get
-    put (num, instr ++ [TACLabel start_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACLabel start_label], st)
     _ <- emitTacky block
-    (num', instr') <- get
-    put (num', instr' ++ [TACLabel continue_label])
+    (num', instr', st') <- get
+    put (num', instr' ++ [TACLabel continue_label], st')
     cond_val <- emitTacky cond
-    (num'', instr'') <- get
-    put (num'', instr'' ++ [TACJumpIfNotZero cond_val start_label, TACLabel break_label])
-    return $ TACConstant 0
+    (num'', instr'', st'') <- get
+    put (num'', instr'' ++ [TACJumpIfNotZero cond_val start_label, TACLabel break_label], st'')
+    return $ TACConstant (ConstInt 0)
   emitTacky (ForStmt label forinit cond update block) = do
     let start_label = startLabel label
     let continue_label = continueLabel label
     let break_label = breakLabel label
     _ <- emitTacky forinit
-    (num, instr) <- get
-    put (num, instr ++ [TACLabel start_label])
+    (num, instr, st) <- get
+    put (num, instr ++ [TACLabel start_label], st)
     case cond of
       Just c -> do
         cond_val <- emitTacky c
-        (num', instr') <- get
-        put (num', instr' ++ [TACJumpIfZero cond_val break_label])
+        (num', instr', st') <- get
+        put (num', instr' ++ [TACJumpIfZero cond_val break_label], st')
       Nothing -> return ()
     _ <- emitTacky block
-    (num', instr') <- get
-    put (num', instr' ++ [TACLabel continue_label])
+    (num', instr', st') <- get
+    put (num', instr' ++ [TACLabel continue_label], st')
     case update of
       Just u -> do
         _ <- emitTacky u
         return ()
       Nothing -> return ()
-    (num'', instr'') <- get
-    put (num'', instr'' ++ [TACJump start_label, TACLabel break_label])
-    return $ TACConstant 0
+    (num'', instr'', st'') <- get
+    put (num'', instr'' ++ [TACJump start_label, TACLabel break_label], st'')
+    return $ TACConstant (ConstInt 0)
   emitTacky (BreakStmt label) = do
-    (num, instr) <- get
-    put (num, instr ++ [TACJump $ breakLabel label])
-    return $ TACConstant 0
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJump $ breakLabel label], st)
+    return $ TACConstant (ConstInt 0)
   emitTacky (ContinueStmt label) = do
-    (num, instr) <- get
-    put (num, instr ++ [TACJump $ continueLabel label])
-    return $ TACConstant 0
+    (num, instr, st) <- get
+    put (num, instr ++ [TACJump $ continueLabel label], st)
+    return $ TACConstant (ConstInt 0)
   emitTacky (SwitchStmt label'@(Just label) caseSet hasDefault expr block) = do
     v <- emitTacky expr
     if not hasDefault && null caseSet
       then do
-        return $ TACConstant 0
+        return $ TACConstant (ConstInt 0)
       else do
         let break_label = breakLabel label'
         traverse_ (caseToIf label v) caseSet
         when hasDefault $ do
-          (num, instr) <- get
-          put (num, instr ++ [TACJump $ switchToDefaultTACIdentifier label])
+          (num, instr, st) <- get
+          put (num, instr ++ [TACJump $ switchToDefaultTACIdentifier label], st)
           return ()
-        (num, instr) <- get
-        put (num, instr ++ [TACJump break_label])
+        (num, instr, st) <- get
+        put (num, instr ++ [TACJump break_label], st)
         _ <- emitTacky block
-        (num', instr') <- get
-        put (num', instr' ++ [TACLabel break_label])
-        return $ TACConstant 0
-  emitTacky (CaseStmt (Just label) (Constant i) stmt) = do
-    (num, instr) <- get
-    put (num, instr ++ [TACLabel $ caseToTACIdentifier label i])
+        (num', instr', st') <- get
+        put (num', instr' ++ [TACLabel break_label], st')
+        return $ TACConstant (ConstInt 0)
+  emitTacky (CaseStmt (Just label) (TypedExpr (Constant i) _) stmt) = do
+    (num, instr, st) <- get
+    put (num, instr ++ [TACLabel $ caseToTACIdentifier label i], st)
     _ <- emitTacky stmt
-    return $ TACConstant 0
+    return $ TACConstant (ConstInt 0)
   emitTacky (DefaultStmt (Just label)) = do
-    (num, instr) <- get
-    put (num, instr ++ [TACLabel $ switchToDefaultTACIdentifier label])
-    return $ TACConstant 0
+    (num, instr, st) <- get
+    put (num, instr ++ [TACLabel $ switchToDefaultTACIdentifier label], st)
+    return $ TACConstant (ConstInt 0)
   emitTacky (CaseStmt {}) = error "CaseStmt with non-constant, this shouldnt happen"
 
-caseToTACIdentifier :: Identifier -> IntLiteral -> TACIdentifier
-caseToTACIdentifier (Identifier name) (IntLiteral i) = name ++ ".case." ++ show i
+showNeg :: Int -> String
+showNeg i = if i < 0 then "neg" ++ show (abs i) else show i
+
+caseToTACIdentifier :: Identifier -> Const -> TACIdentifier
+caseToTACIdentifier name (ConstInt i) = name ++ ".case." ++ showNeg i
+caseToTACIdentifier name (ConstLong i) = name ++ ".case." ++ showNeg i
 
 switchToDefaultTACIdentifier :: Identifier -> TACIdentifier
-switchToDefaultTACIdentifier (Identifier name) = name ++ ".default"
+switchToDefaultTACIdentifier name = name ++ ".default"
 
-caseToIf :: Identifier -> TACVal -> IntLiteral -> InstrSt ()
-caseToIf identifier v i@(IntLiteral i') = do
-  tmp <- globalNameGenerator "tmp."
-  (num, instr) <- get
-  put (num, instr ++ [TACBinary TACEqual v (TACConstant i') (TACVar tmp), TACJumpIfNotZero (TACVar tmp) (caseToTACIdentifier identifier i)])
+caseToIf :: Identifier -> TACVal -> Const -> InstrSt ()
+caseToIf identifier v i = do
+  tmp <- makeTemporaryVariable "tmp." (Just CInt)
+  (num, instr, st) <- get
+  put (num, instr ++ [TACBinary TACEqual v (TACConstant i) (TACVar tmp), TACJumpIfNotZero (TACVar tmp) (caseToTACIdentifier identifier i)], st)
   return ()
 
 instance Emittable ForInit where
   emitTacky :: ForInit -> InstrSt TACVal
   emitTacky (InitDecl decl) = emitTacky decl
-  emitTacky (InitExpr Nothing) = return $ TACConstant 0
+  emitTacky (InitExpr Nothing) = return $ TACConstant (ConstInt 0)
   emitTacky (InitExpr (Just e)) = emitTacky e
 
 instance Emittable BlockItem where
@@ -452,7 +500,7 @@ instance Emittable BlockItem where
 
 instance Emittable Block where
   emitTacky :: Block -> InstrSt TACVal
-  emitTacky (Block items) = traverse_ emitTacky items >> return (TACConstant 0)
+  emitTacky (Block items) = traverse_ emitTacky items >> return (TACConstant (ConstInt 0))
 
 instance Emittable Decl where
   emitTacky :: Decl -> InstrSt TACVal
@@ -461,31 +509,47 @@ instance Emittable Decl where
 
 instance Emittable FuncDecl where
   emitTacky :: FuncDecl -> InstrSt TACVal
-  emitTacky _ = return $ TACConstant 0
+  emitTacky _ = return $ TACConstant (ConstInt 0)
 
-toTACFunc :: SymbolTable -> GlobalNameMap -> FuncDecl -> (GlobalNameMap, TACTopLevel)
-toTACFunc st globalMap (FuncDecl (Identifier name) args (Just block) _) = (newMap, TACFunction name functionGlobal tacArgs (instrs ++ [TACReturn $ TACConstant 0]))
+toTACFunc :: SymbolTable -> GlobalNameMap -> FuncDecl -> (GlobalNameMap, TACTopLevel, SymbolTable)
+toTACFunc st globalMap (FuncDecl name args (Just block) _ _) = (newMap, TACFunction name functionGlobal args (instrs ++ [TACReturn $ TACConstant (ConstInt 0)]), newSt)
   where
-    (newMap, instrs) = execState (emitTacky block) (globalMap, [])
-    tacArgs = fmap (\(Identifier arg) -> arg) args
-    functionSymbol = M.lookup (Identifier name) st
+    (newMap, instrs, newSt) = execState (emitTacky block) (globalMap, [], st)
+    functionSymbol = M.lookup name st
     functionGlobal = case functionSymbol of
       Just (_, FuncAttr _ global) -> global
       _ -> error "Function without symbol, this shouldnt happen"
 toTACFunc _ _ _ = error "FuncDecl without body, this shouldnt happen"
 
+-- toTACProg :: (Program, SymbolTable) -> (TACProgram, SymbolTable)
+-- toTACProg (Program fs, st) = (TACProgram funcs, nst)
+--   where
+--     (nst, funcs) = tac_functions M.empty st functions_with_body staticVariables
+--     staticVariables = symbolsToTacky st
+--     functions_with_body = fmap (\(FDecl decl) -> decl) (filter isFDWithBody fs)
+--     isFDWithBody :: Decl -> Bool
+--     isFDWithBody (FDecl (FuncDecl _ _ (Just _) _ _)) = True
+--     isFDWithBody _ = False
+--     tac_functions _ sym [] acc = (sym, acc)
+--     tac_functions gm sym (f : f') acc = tac_functions newMap newst f' (acc ++ [tac_f])
+--       where
+--         (newMap, tac_f, newst) = toTACFunc sym gm f
+
 toTACProg :: (Program, SymbolTable) -> (TACProgram, SymbolTable)
-toTACProg (Program fs, st) = (TACProgram $ tac_functions M.empty functions_with_body staticVariables, st)
+toTACProg (Program fs, st) = (TACProgram funcs, newSt)
   where
-    staticVariables = symbolsToTacky st
-    functions_with_body = fmap (\(FDecl decl) -> decl) (filter isFDWithBody fs)
-    isFDWithBody :: Decl -> Bool
-    isFDWithBody (FDecl (FuncDecl _ _ (Just _) _)) = True
-    isFDWithBody _ = False
-    tac_functions _ [] acc = acc
-    tac_functions gm (f : f') acc = tac_functions newMap f' (acc ++ [tac_f])
-      where
-        (newMap, tac_f) = toTACFunc st gm f
+    (newSt, funcs) = processFunctions M.empty st functionDecls staticVars
+    staticVars = symbolsToTacky st
+    functionDecls = mapMaybe getFunctionDecl fs
+
+    getFunctionDecl :: Decl -> Maybe FuncDecl
+    getFunctionDecl (FDecl decl@(FuncDecl _ _ (Just _) _ _)) = Just decl
+    getFunctionDecl _ = Nothing
+
+    processFunctions _ symTable [] acc = (symTable, acc)
+    processFunctions globalMap symTable (f : fs') acc =
+      let (newGlobalMap, tacFunc, newSymTable) = toTACFunc symTable globalMap f
+       in processFunctions newGlobalMap newSymTable fs' (acc ++ [tacFunc])
 
 isRelationalOp :: TACBinaryOp -> Bool
 isRelationalOp TACEqual = True
@@ -503,6 +567,52 @@ symbolsToTacky st = fmap convert stList
     filterStatic (_, (_, StaticAttr (Initial _) _)) = True
     filterStatic (_, (_, StaticAttr Tentative _)) = True
     filterStatic _ = False
-    convert (Identifier name, (_, StaticAttr (Initial i) global)) = TACStaticVariable name global i
-    convert (Identifier name, (_, StaticAttr Tentative global)) = TACStaticVariable name global 0
+    convert (name, (CInt, StaticAttr (Initial (IntInit i)) global)) = TACStaticVariable name global CInt (IntInit i)
+    convert (name, (CInt, StaticAttr (Initial (LongInit i)) global)) = TACStaticVariable name global CInt (IntInit (castLongToInt i))
+    convert (name, (CLong, StaticAttr (Initial (LongInit i)) global)) = TACStaticVariable name global CLong (LongInit i)
+    convert (name, (CLong, StaticAttr (Initial (IntInit i)) global)) = TACStaticVariable name global CLong (LongInit i)
+    convert (name, (CInt, StaticAttr Tentative global)) = TACStaticVariable name global CInt (IntInit 0)
+    convert (name, (CLong, StaticAttr Tentative global)) = TACStaticVariable name global CLong (LongInit 0)
     convert _ = error "This shouldnt happen"
+
+emitTackyCastWithSrc :: TypedExpr -> InstrSt (TACVal, TACVal)
+emitTackyCastWithSrc (TypedExpr (Cast targetType e) ty) = do
+  src <- emitTacky e
+  if ty == tyType e
+    then return (src, src)
+    else do
+      dst_name <- makeTemporaryVariable "tmp." ty
+      (num, instr, st) <- get
+      let castInstr = case targetType of
+            CInt -> TACTruncate
+            CLong -> TACSignExtend
+            _ -> error "Cast: This shouldnt happen"
+      put (num, instr ++ [castInstr src (TACVar dst_name)], st)
+      return (src, TACVar dst_name)
+emitTackyCastWithSrc e = do
+  src <- emitTacky e
+  return (src, src)
+
+emitTackyCompoundWidening :: TypedExpr -> InstrSt TACVal
+emitTackyCompoundWidening (TypedExpr (Assignment op l r) t) = do
+  let leftType = tyType l
+      rightType = tyType r
+      commonType = liftA2 getCommonType leftType rightType
+      castLeft = convertTo l commonType
+      castRight = convertTo r commonType
+  (lhs_src, lhs_converted) <- emitTackyCastWithSrc castLeft
+  rhs <- emitTacky castRight
+  dst_name <- makeTemporaryVariable "tmp." commonType
+  let initialInstr = [TACBinary (tackyAssignOp op) lhs_converted rhs (TACVar dst_name)]
+  if t == commonType
+    then do
+      (num, instr, st) <- get
+      put (num, instr ++ initialInstr ++ [TACCopy (TACVar dst_name) lhs_src], st)
+      return lhs_src
+    else do
+      truncate_temp <- makeTemporaryVariable "tmp." t
+      let truncate_lhs_instr = [TACTruncate (TACVar dst_name) (TACVar truncate_temp), TACCopy (TACVar truncate_temp) lhs_src]
+      (num, instr, st) <- get
+      put (num, instr ++ initialInstr ++ truncate_lhs_instr, st)
+      return lhs_src
+emitTackyCompoundWidening _ = error "Not an assignment, this shouldnt happen"

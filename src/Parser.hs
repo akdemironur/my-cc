@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
@@ -8,8 +9,10 @@ module Parser where
 
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, some, (<|>))
-import Control.Monad (MonadPlus, mzero, void, when)
+import Control.Monad (MonadPlus, guard, mzero, unless, void, when)
 import Data.Functor (($>), (<&>))
+import Data.List (partition)
+import Data.Maybe (listToMaybe)
 import qualified Data.Set as S
 import Lexer
 
@@ -142,7 +145,7 @@ tokenToPostOp t = error $ "Invalid post operator: " ++ show t
 
 parseIdentifier :: Parser Identifier
 parseIdentifier = Parser $ \tokens -> case tokens of
-  (TIdentifier s : ts) -> Right (Identifier s, ts)
+  (TIdentifier s : ts) -> Right (s, ts)
   _ -> Left $ "Expected identifier, got: " ++ show (take 10 tokens)
 
 parseIntLiteral :: Parser IntLiteral
@@ -152,14 +155,17 @@ parseIntLiteral = Parser $ \tokens -> case tokens of
 
 parseVarDecl :: Parser VarDecl
 parseVarDecl = do
-  (_, storageClass) <- parseTypeAndStorageClass
+  (variableType, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
   expr <- optional (parseToken TAssignment *> parseExpr)
   parseToken TSemicolon
-  return (VarDecl name expr storageClass)
+  return (VarDecl name (toTypedExpr <$> expr) variableType storageClass)
+
+toTypedExpr :: Expr -> TypedExpr
+toTypedExpr e = TypedExpr e Nothing
 
 parseUExpr :: Parser Expr
-parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr
+parseUExpr = Unary <$> parseUnaryOp <*> (toTypedExpr <$> parseUExpr) <|> parsePExpr <|> parseCastExpr
 
 parsePExpr :: Parser Expr
 parsePExpr = do
@@ -167,11 +173,15 @@ parsePExpr = do
   ops <- many parsePostOp
   case ops of
     [] -> return pe
-    _ -> return $ foldl PostFix pe ops
+    _ -> do
+      let tpe = toTypedExpr pe
+      let fpo op ty = toTypedExpr $ PostFix ty op
+      let pf = foldr fpo tpe ops
+      return $ tyExpr pf
 
 parsePrimaryExpr :: Parser Expr
 parsePrimaryExpr =
-  Constant <$> parseIntLiteral
+  Constant <$> parseConst
     <|> parseFunctionCall
     <|> Var <$> parseIdentifier
     <|> (parseToken TOpenParen *> parseExpr <* parseToken TCloseParen)
@@ -180,10 +190,17 @@ parseExpr :: Parser Expr
 parseExpr = parseExprPrec 0
 
 parseFunctionCall :: Parser Expr
-parseFunctionCall = FunctionCall <$> parseIdentifier <*> parseArguments
+parseFunctionCall = FunctionCall <$> parseIdentifier <*> fmap (toTypedExpr <$>) parseArguments
 
 parseExprPrec :: Int -> Parser Expr
 parseExprPrec minPrec = parseBAExpr minPrec <|> parseUExpr
+
+parseCastExpr :: Parser Expr
+parseCastExpr = do
+  parseToken TOpenParen
+  t <- parseType
+  parseToken TCloseParen
+  Cast t . toTypedExpr <$> parseUExpr
 
 parseBAExpr :: Int -> Parser Expr
 parseBAExpr mp = do
@@ -199,24 +216,27 @@ parseBAExpr mp = do
       case next_op of
         B op -> do
           rightExpr <- parseExprPrec (opPrecedence op + 1)
-          let newLeft = Binary op leftExpr rightExpr
+          let newLeft = Binary op (TypedExpr leftExpr Nothing) (TypedExpr rightExpr Nothing)
           parseBAExprHelper newLeft minPrec <|> return newLeft
         A op -> do
           rightExpr <- parseExprPrec (opPrecedence op)
-          let newLeft = Assignment op leftExpr rightExpr
+          let newLeft = Assignment op (TypedExpr leftExpr Nothing) (TypedExpr rightExpr Nothing)
           parseBAExprHelper newLeft minPrec <|> return newLeft
         C op -> do
           middle <- parseExpr <* parseToken TColon
           right <- parseExprPrec (opPrecedence op)
-          let newLeft = Conditional leftExpr middle right
+          let newLeft = Conditional (TypedExpr leftExpr Nothing) (TypedExpr middle Nothing) (TypedExpr right Nothing)
           parseBAExprHelper newLeft minPrec <|> return newLeft
         _ -> empty
 
+parseTypedExpr :: Parser TypedExpr
+parseTypedExpr = toTypedExpr <$> parseExpr
+
 parseStmt :: Parser Stmt
 parseStmt =
-  ReturnStmt <$> (parseToken TReturnKeyword *> parseExpr <* parseToken TSemicolon)
+  ReturnStmt <$> (parseToken TReturnKeyword *> parseTypedExpr <* parseToken TSemicolon)
     <|> NullStmt <$ parseToken TSemicolon
-    <|> ExprStmt <$> (parseExpr <* parseToken TSemicolon)
+    <|> ExprStmt <$> (parseTypedExpr <* parseToken TSemicolon)
     <|> parseIfStmt
     <|> parseLabeledStmt
     <|> parseGotoStmt
@@ -240,7 +260,7 @@ parseForInit = parseForInitDecl <|> parseForInitExpr
     parseForInitExpr :: Parser ForInit
     parseForInitExpr =
       InitExpr
-        <$> optional parseExpr
+        <$> optional parseTypedExpr
         <* parseToken TSemicolon
 
 parseLabeledStmt :: Parser Stmt
@@ -268,7 +288,7 @@ parseWhileStmt :: Parser Stmt
 parseWhileStmt = do
   parseToken TWhileKeyword
   parseToken TOpenParen
-  condition <- parseExpr
+  condition <- parseTypedExpr
   parseToken TCloseParen
   WhileStmt Nothing condition <$> parseStmt
 
@@ -278,7 +298,7 @@ parseDoWhileStmt = do
   block <- parseStmt
   parseToken TWhileKeyword
   parseToken TOpenParen
-  condition <- parseExpr
+  condition <- parseTypedExpr
   parseToken TCloseParen
   parseToken TSemicolon
   return (DoWhileStmt Nothing block condition)
@@ -288,16 +308,16 @@ parseForStmt = do
   parseToken TForKeyword
   parseToken TOpenParen
   forinit <- parseForInit
-  condition <- optional parseExpr
+  condition <- optional parseTypedExpr
   parseToken TSemicolon
-  iter <- optional parseExpr
+  iter <- optional parseTypedExpr
   parseToken TCloseParen
   ForStmt Nothing forinit condition iter <$> parseStmt
 
 parseCaseStmt :: Parser Stmt
 parseCaseStmt = do
   parseToken TCaseKeyword
-  expr <- parseExpr
+  expr <- parseTypedExpr
   parseToken TColon
   CaseStmt Nothing expr <$> parseStmt
 
@@ -312,7 +332,7 @@ parseSwitchStmt :: Parser Stmt
 parseSwitchStmt = do
   parseToken TSwitchKeyword
   parseToken TOpenParen
-  expr <- parseExpr
+  expr <- parseTypedExpr
   parseToken TCloseParen
   SwitchStmt Nothing S.empty False expr <$> parseStmt
 
@@ -327,7 +347,7 @@ parseIfStmt :: Parser Stmt
 parseIfStmt = do
   parseToken TIfKeyword
   parseToken TOpenParen
-  condition <- parseExpr
+  condition <- parseTypedExpr
   parseToken TCloseParen
   thenBlock <- parseStmt
   elseBlock <- optional (parseToken TElseKeyword *> parseStmt)
@@ -350,60 +370,116 @@ parseBlock = do
 
 parseFunctionJustDecl :: Parser FuncDecl
 parseFunctionJustDecl = do
-  (_, storageClass) <- parseTypeAndStorageClass
+  (functionReturnType, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
-  params <- parseParameters
+  (params, paramTypes) <- parseParameters
+  let functionType = CFunc paramTypes functionReturnType
   parseToken TSemicolon
-  return (FuncDecl name params Nothing storageClass)
+  return (FuncDecl name params Nothing functionType storageClass)
 
 parseFunctionWithBody :: Parser FuncDecl
 parseFunctionWithBody = do
-  (_, storageClass) <- parseTypeAndStorageClass
+  (functionReturnType, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
-  params <- parseParameters
-  FuncDecl name params . Just <$> parseBlock <*> pure storageClass
+  (params, paramTypes) <- parseParameters
+  let functionType = CFunc paramTypes functionReturnType
+  FuncDecl name params . Just <$> parseBlock <*> pure functionType <*> pure storageClass
 
 parseFunction :: Parser FuncDecl
 parseFunction = parseFunctionJustDecl <|> parseFunctionWithBody
 
-parseVoidParameter :: Parser [Identifier]
+parseVoidParameter :: Parser ([Identifier], [CType])
 parseVoidParameter = do
   parseToken TOpenParen
   parseToken TVoidKeyword
   parseToken TCloseParen
-  return []
+  return ([], [])
 
-parseParameterList :: Parser [Identifier]
+parseTypeSpecifier :: Parser Token
+parseTypeSpecifier = Parser $ \tokens -> case tokens of
+  (t : ts) ->
+    if isTypeSpecifier t
+      then Right (t, ts)
+      else Left "No type specifier"
+  _ -> Left "No type specifier"
+
+isTypeSpecifier :: Token -> Bool
+isTypeSpecifier TIntKeyword = True
+isTypeSpecifier TLongKeyword = True
+isTypeSpecifier _ = False
+
+parseType :: Parser CType
+parseType = do
+  typeSpecifiers <- some parseTypeSpecifier
+  case typeSpecifiers of
+    [TIntKeyword] -> return CInt
+    [TLongKeyword] -> return CLong
+    [TIntKeyword, TLongKeyword] -> return CLong
+    [TLongKeyword, TIntKeyword] -> return CLong
+    _ -> fail "Invalid type specifier"
+
+sepBy :: Parser a -> Parser b -> Parser [a]
+sepBy p sep = (:) <$> p <*> many (sep *> p) <|> pure []
+
+parseParameter :: Parser (Identifier, CType)
+parseParameter = do
+  t <- parseType
+  name <- parseIdentifier
+  return (name, t)
+
+parseParameterList :: Parser ([Identifier], [CType])
 parseParameterList = do
   parseToken TOpenParen
-  first_param <- parseToken TIntKeyword *> parseIdentifier
-  rest_params <- many (parseToken TComma *> (parseToken TIntKeyword *> parseIdentifier))
+  params <- parseParameter `sepBy` parseToken TComma
   parseToken TCloseParen
-  return (first_param : rest_params)
+  return (fst <$> params, snd <$> params)
 
-parseParameters :: Parser [Identifier]
-parseParameters = parseVoidParameter <|> parseParameterList
+parseParameters :: Parser ([Identifier], [CType])
+parseParameters = parseParameterList <|> parseVoidParameter
 
 parseSpecifier :: Parser Token
 parseSpecifier = satisfy isSpecifier
 
-parseTypeAndStorageClass :: Parser (Token, Maybe StorageClass)
+parseTypeAndStorageClass :: Parser (CType, Maybe StorageClass)
 parseTypeAndStorageClass = do
   specifiers <- some parseSpecifier
-  let typeSpecifier = filter (== TIntKeyword) specifiers
-  let storageClassSpecifier = filter (/= TIntKeyword) specifiers
-  when (null typeSpecifier) $ fail "No type specifier"
-  when (length typeSpecifier > 1) $ fail "Multiple type specifiers"
-  when (length storageClassSpecifier > 1) $ fail "Multiple storage class specifiers"
-  return (head typeSpecifier, listToMaybe (fmap tokenToStorageClass storageClassSpecifier))
+  let (typeSpecs, storageSpecs) = partition isTypeSpecifier specifiers
+  validateSpecifiers typeSpecs storageSpecs
+  pure (typeSpecsToType typeSpecs, listToMaybe (storageSpecToClass <$> storageSpecs))
   where
-    listToMaybe :: [a] -> Maybe a
-    listToMaybe [] = Nothing
-    listToMaybe (x : _) = Just x
-    tokenToStorageClass :: Token -> StorageClass
-    tokenToStorageClass TExternKeyword = Extern
-    tokenToStorageClass TStaticKeyword = Static
-    tokenToStorageClass t = error $ "Invalid storage class: " ++ show t
+    validateSpecifiers :: [Token] -> [Token] -> Parser ()
+    validateSpecifiers typeSpecs storageSpecs = do
+      when (null typeSpecs) $ fail "No type specifier"
+      when (length typeSpecs > 2) $ fail "Multiple type specifiers"
+      when (length storageSpecs > 1) $ fail "Multiple storage class specifiers"
+      unless (isValidTypeSpecs typeSpecs) $ fail "Invalid type specifier"
+    isValidTypeSpecs :: [Token] -> Bool
+    isValidTypeSpecs specs = specs `elem` validTypeCombos
+      where
+        validTypeCombos =
+          [ [TIntKeyword],
+            [TLongKeyword],
+            [TIntKeyword, TLongKeyword],
+            [TLongKeyword, TIntKeyword]
+          ]
+    typeSpecsToType :: [Token] -> CType
+    typeSpecsToType specs
+      | isLongType specs = CLong
+      | specs == [TIntKeyword] = CInt
+      | otherwise = error "Invalid type" -- Should never happen due to validation
+      where
+        isLongType ts =
+          ts
+            `elem` [ [TLongKeyword],
+                     [TIntKeyword, TLongKeyword],
+                     [TLongKeyword, TIntKeyword]
+                   ]
+
+    storageSpecToClass :: Token -> StorageClass
+    storageSpecToClass = \case
+      TExternKeyword -> Extern
+      TStaticKeyword -> Static
+      t -> error $ "Invalid storage class: " ++ show t
 
 parseArguments :: Parser [Expr]
 parseArguments = do
@@ -420,6 +496,25 @@ parseArguments = do
 
 parseProgram :: Parser Program
 parseProgram = Program <$> some parseDecl
+
+maxInt :: Int
+maxInt = 2 ^ 31 - 1
+
+maxLong :: Int
+maxLong = 2 ^ 63 - 1
+
+orLeft :: Maybe a -> String -> Either String a
+orLeft m msg = maybe (Left msg) Right m
+
+parseConst :: Parser Const
+parseConst = Parser $ \case
+  TConstant i : ts -> do
+    guard (i <= maxLong) `orLeft` "Constant is too large to represent as an int or long"
+    Right ((if i <= maxInt then ConstInt else ConstLong) i, ts)
+  TLongConstant i : ts -> do
+    guard (i <= maxLong) `orLeft` "Constant is too large to represent as a long"
+    Right (ConstLong i, ts)
+  _ -> Left "Expected integer constant"
 
 parse :: [Token] -> Program
 parse tokens = case runParser parseProgram tokens of
