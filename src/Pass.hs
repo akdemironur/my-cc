@@ -11,7 +11,7 @@ resolveAll :: Program -> (Program, SymbolTable)
 resolveAll program = case varResolve program
   >>= labelResolve
   >>= loopLabeling
-  >>= caseResolve
-  >>= typeChecker of
+  >>= typeChecker
+  >>= caseResolve of
   Left err -> error err
-  Right p -> p
+  Right (p, st) -> (p, st)

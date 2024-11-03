@@ -29,11 +29,11 @@ instance LabelResolve Decl where
 
 instance LabelResolve FuncDecl where
   labelResolve :: FuncDecl -> Either String FuncDecl
-  labelResolve (FuncDecl fname args block sc) = do
+  labelResolve (FuncDecl fname args block ftype sc) = do
     let p = evalStateT (traverse (resolveP1 fname) block >>= traverse resolveP2) S.empty
     case p of
       Left err -> Left err
-      Right p' -> return $ FuncDecl fname args p' sc
+      Right p' -> return $ FuncDecl fname args p' ftype sc
 
 class LabelResolvePass1 a where
   resolveP1 :: String -> a -> LabelStateT a
@@ -85,7 +85,7 @@ instance LabelResolvePass2 Decl where
 
 instance LabelResolvePass2 FuncDecl where
   resolveP2 :: FuncDecl -> LabelStateT FuncDecl
-  resolveP2 (FuncDecl name args block sc) = FuncDecl name args <$> traverse resolveP2 block <*> return sc
+  resolveP2 (FuncDecl name args block ftype sc) = FuncDecl name args <$> traverse resolveP2 block <*> pure ftype <*> pure sc
 
 instance LabelResolvePass2 Block where
   resolveP2 :: Block -> LabelStateT Block

@@ -159,10 +159,13 @@ parseVarDecl = do
   name <- parseIdentifier
   expr <- optional (parseToken TAssignment *> parseExpr)
   parseToken TSemicolon
-  return (VarDecl name expr variableType storageClass)
+  return (VarDecl name (toTypedExpr <$> expr) variableType storageClass)
+
+toTypedExpr :: Expr -> TypedExpr
+toTypedExpr e = TypedExpr e Nothing
 
 parseUExpr :: Parser Expr
-parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr <|> parseCastExpr
+parseUExpr = Unary <$> parseUnaryOp <*> (toTypedExpr <$> parseUExpr) <|> parsePExpr <|> parseCastExpr
 
 parsePExpr :: Parser Expr
 parsePExpr = do
@@ -170,7 +173,11 @@ parsePExpr = do
   ops <- many parsePostOp
   case ops of
     [] -> return pe
-    _ -> return $ foldl PostFix pe ops
+    _ -> do
+      let tpe = toTypedExpr pe
+      let fpo op ty = toTypedExpr $ PostFix ty op
+      let pf = foldr fpo tpe ops
+      return $ tyExpr pf
 
 parsePrimaryExpr :: Parser Expr
 parsePrimaryExpr =
@@ -183,7 +190,7 @@ parseExpr :: Parser Expr
 parseExpr = parseExprPrec 0
 
 parseFunctionCall :: Parser Expr
-parseFunctionCall = FunctionCall <$> parseIdentifier <*> parseArguments
+parseFunctionCall = FunctionCall <$> parseIdentifier <*> fmap (toTypedExpr <$>) parseArguments
 
 parseExprPrec :: Int -> Parser Expr
 parseExprPrec minPrec = parseBAExpr minPrec <|> parseUExpr
@@ -193,7 +200,7 @@ parseCastExpr = do
   parseToken TOpenParen
   t <- parseType
   parseToken TCloseParen
-  Cast t <$> parseCastExpr <|> parseUExpr
+  Cast t . toTypedExpr <$> parseUExpr
 
 parseBAExpr :: Int -> Parser Expr
 parseBAExpr mp = do
@@ -209,24 +216,27 @@ parseBAExpr mp = do
       case next_op of
         B op -> do
           rightExpr <- parseExprPrec (opPrecedence op + 1)
-          let newLeft = Binary op leftExpr rightExpr
+          let newLeft = Binary op (TypedExpr leftExpr Nothing) (TypedExpr rightExpr Nothing)
           parseBAExprHelper newLeft minPrec <|> return newLeft
         A op -> do
           rightExpr <- parseExprPrec (opPrecedence op)
-          let newLeft = Assignment op leftExpr rightExpr
+          let newLeft = Assignment op (TypedExpr leftExpr Nothing) (TypedExpr rightExpr Nothing)
           parseBAExprHelper newLeft minPrec <|> return newLeft
         C op -> do
           middle <- parseExpr <* parseToken TColon
           right <- parseExprPrec (opPrecedence op)
-          let newLeft = Conditional leftExpr middle right
+          let newLeft = Conditional (TypedExpr leftExpr Nothing) (TypedExpr middle Nothing) (TypedExpr right Nothing)
           parseBAExprHelper newLeft minPrec <|> return newLeft
         _ -> empty
 
+parseTypedExpr :: Parser TypedExpr
+parseTypedExpr = toTypedExpr <$> parseExpr
+
 parseStmt :: Parser Stmt
 parseStmt =
-  ReturnStmt <$> (parseToken TReturnKeyword *> parseExpr <* parseToken TSemicolon)
+  ReturnStmt <$> (parseToken TReturnKeyword *> parseTypedExpr <* parseToken TSemicolon)
     <|> NullStmt <$ parseToken TSemicolon
-    <|> ExprStmt <$> (parseExpr <* parseToken TSemicolon)
+    <|> ExprStmt <$> (parseTypedExpr <* parseToken TSemicolon)
     <|> parseIfStmt
     <|> parseLabeledStmt
     <|> parseGotoStmt
@@ -250,7 +260,7 @@ parseForInit = parseForInitDecl <|> parseForInitExpr
     parseForInitExpr :: Parser ForInit
     parseForInitExpr =
       InitExpr
-        <$> optional parseExpr
+        <$> optional parseTypedExpr
         <* parseToken TSemicolon
 
 parseLabeledStmt :: Parser Stmt
@@ -278,7 +288,7 @@ parseWhileStmt :: Parser Stmt
 parseWhileStmt = do
   parseToken TWhileKeyword
   parseToken TOpenParen
-  condition <- parseExpr
+  condition <- parseTypedExpr
   parseToken TCloseParen
   WhileStmt Nothing condition <$> parseStmt
 
@@ -288,7 +298,7 @@ parseDoWhileStmt = do
   block <- parseStmt
   parseToken TWhileKeyword
   parseToken TOpenParen
-  condition <- parseExpr
+  condition <- parseTypedExpr
   parseToken TCloseParen
   parseToken TSemicolon
   return (DoWhileStmt Nothing block condition)
@@ -298,16 +308,16 @@ parseForStmt = do
   parseToken TForKeyword
   parseToken TOpenParen
   forinit <- parseForInit
-  condition <- optional parseExpr
+  condition <- optional parseTypedExpr
   parseToken TSemicolon
-  iter <- optional parseExpr
+  iter <- optional parseTypedExpr
   parseToken TCloseParen
   ForStmt Nothing forinit condition iter <$> parseStmt
 
 parseCaseStmt :: Parser Stmt
 parseCaseStmt = do
   parseToken TCaseKeyword
-  expr <- parseExpr
+  expr <- parseTypedExpr
   parseToken TColon
   CaseStmt Nothing expr <$> parseStmt
 
@@ -322,7 +332,7 @@ parseSwitchStmt :: Parser Stmt
 parseSwitchStmt = do
   parseToken TSwitchKeyword
   parseToken TOpenParen
-  expr <- parseExpr
+  expr <- parseTypedExpr
   parseToken TCloseParen
   SwitchStmt Nothing S.empty False expr <$> parseStmt
 
@@ -337,7 +347,7 @@ parseIfStmt :: Parser Stmt
 parseIfStmt = do
   parseToken TIfKeyword
   parseToken TOpenParen
-  condition <- parseExpr
+  condition <- parseTypedExpr
   parseToken TCloseParen
   thenBlock <- parseStmt
   elseBlock <- optional (parseToken TElseKeyword *> parseStmt)

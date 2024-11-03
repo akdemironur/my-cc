@@ -56,7 +56,7 @@ instance LoopLabelingPass Program where
 
 instance LoopLabelingPass FuncDecl where
   labelLoops :: FuncDecl -> LoopLabelingT FuncDecl
-  labelLoops (FuncDecl name args block sc) = FuncDecl name args <$> traverse labelLoops block <*> pure sc
+  labelLoops (FuncDecl name args block ftype sc) = FuncDecl name args <$> traverse labelLoops block <*> pure ftype <*> pure sc
 
 instance LoopLabelingPass Decl where
   labelLoops :: Decl -> LoopLabelingT Decl

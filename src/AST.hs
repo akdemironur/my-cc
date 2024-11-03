@@ -2,7 +2,23 @@
 
 module AST where
 
+import Data.Bits (complement, testBit, (.&.), (.|.))
 import qualified Data.Set as S
+
+castLongToInt :: Int -> Int
+castLongToInt x =
+  let masked = x .&. 0xFFFFFFFF
+      isNegative = testBit masked 31
+      signExtended =
+        if isNegative
+          then masked .|. complement 0xFFFFFFFF
+          else masked
+   in signExtended
+
+convertConst :: CType -> Const -> Const
+convertConst CInt (ConstLong x) = ConstInt (castLongToInt x)
+convertConst CLong (ConstInt x) = ConstLong x
+convertConst _ x = x
 
 newtype Program = Program [Decl] deriving (Eq)
 
@@ -14,37 +30,43 @@ type Identifier = String
 
 data ForInit
   = InitDecl VarDecl
-  | InitExpr (Maybe Expr)
+  | InitExpr (Maybe TypedExpr)
   deriving (Eq)
 
 data Stmt
-  = ReturnStmt Expr
-  | ExprStmt Expr
-  | IfStmt Expr Stmt (Maybe Stmt)
+  = ReturnStmt TypedExpr
+  | ExprStmt TypedExpr
+  | IfStmt TypedExpr Stmt (Maybe Stmt)
   | NullStmt
   | LabeledStmt Identifier Stmt
   | GotoStmt Identifier
   | CompoundStmt Block
-  | ForStmt (Maybe Identifier) ForInit (Maybe Expr) (Maybe Expr) Stmt
-  | WhileStmt (Maybe Identifier) Expr Stmt
-  | DoWhileStmt (Maybe Identifier) Stmt Expr
+  | ForStmt (Maybe Identifier) ForInit (Maybe TypedExpr) (Maybe TypedExpr) Stmt
+  | WhileStmt (Maybe Identifier) TypedExpr Stmt
+  | DoWhileStmt (Maybe Identifier) Stmt TypedExpr
   | BreakStmt (Maybe Identifier)
   | ContinueStmt (Maybe Identifier)
-  | SwitchStmt (Maybe Identifier) (S.Set Const) Bool Expr Stmt
-  | CaseStmt (Maybe Identifier) Expr Stmt
+  | SwitchStmt (Maybe Identifier) (S.Set Const) Bool TypedExpr Stmt
+  | CaseStmt (Maybe Identifier) TypedExpr Stmt
   | DefaultStmt (Maybe Identifier)
   deriving (Eq)
+
+data TypedExpr = TypedExpr
+  { tyExpr :: Expr,
+    tyType :: Maybe CType
+  }
+  deriving (Eq, Show)
 
 data Expr
   = Constant Const
   | Var Identifier
-  | Cast CType Expr
-  | Unary UnaryOp Expr
-  | PostFix Expr PostOp
-  | Binary BinaryOp Expr Expr
-  | Assignment AssignmentOp Expr Expr
-  | Conditional Expr Expr Expr
-  | FunctionCall Identifier [Expr]
+  | Cast CType TypedExpr
+  | Unary UnaryOp TypedExpr
+  | PostFix TypedExpr PostOp
+  | Binary BinaryOp TypedExpr TypedExpr
+  | Assignment AssignmentOp TypedExpr TypedExpr
+  | Conditional TypedExpr TypedExpr TypedExpr
+  | FunctionCall Identifier [TypedExpr]
   deriving (Eq)
 
 data AssignmentOp
@@ -90,7 +112,7 @@ data CType
 
 data VarDecl = VarDecl
   { varName :: Identifier,
-    varExpr :: Maybe Expr,
+    varExpr :: Maybe TypedExpr,
     varType :: CType,
     varStorage :: Maybe StorageClass
   }
@@ -371,6 +393,7 @@ instance Show Expr where
       ++ "\n"
       ++ ")"
   show (FunctionCall i es) = "FunctionCall(" ++ show i ++ ", " ++ show es ++ ")"
+  show (Cast t e) = "Cast(" ++ show t ++ ", " ++ show e ++ ")"
 
 instance Show UnaryOp where
   show :: UnaryOp -> String
