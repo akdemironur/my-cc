@@ -9,7 +9,7 @@ module Parser where
 
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, some, (<|>))
-import Control.Monad (MonadPlus, mzero, unless, void, when)
+import Control.Monad (MonadPlus, guard, mzero, unless, void, when)
 import Data.Functor (($>), (<&>))
 import Data.List (partition)
 import Data.Maybe (listToMaybe)
@@ -487,19 +487,24 @@ parseArguments = do
 parseProgram :: Parser Program
 parseProgram = Program <$> some parseDecl
 
-parseConstInt :: Parser Const
-parseConstInt = Parser $ \tokens -> case tokens of
-  (TConstant i : ts) -> Right (ConstInt i, ts)
-  _ -> Left "Expected integer (not long) constant"
+maxInt :: Int
+maxInt = 2 ^ 31 - 1
 
-parseConstLong :: Parser Const
-parseConstLong = Parser $ \tokens -> case tokens of
-  (TConstant i : ts) -> Right (ConstLong i, ts)
-  (TLongConstant i : ts) -> Right (ConstLong i, ts)
-  _ -> Left "Expected integer constant"
+maxLong :: Int
+maxLong = 2 ^ 63 - 1
+
+orLeft :: Maybe a -> String -> Either String a
+orLeft m msg = maybe (Left msg) Right m
 
 parseConst :: Parser Const
-parseConst = parseConstInt <|> parseConstLong
+parseConst = Parser $ \case
+  TConstant i : ts -> do
+    guard (i <= maxLong) `orLeft` "Constant is too large to represent as an int or long"
+    Right ((if i <= maxInt then ConstInt else ConstLong) i, ts)
+  TLongConstant i : ts -> do
+    guard (i <= maxLong) `orLeft` "Constant is too large to represent as a long"
+    Right (ConstLong i, ts)
+  _ -> Left "Expected integer constant"
 
 parse :: [Token] -> Program
 parse tokens = case runParser parseProgram tokens of
