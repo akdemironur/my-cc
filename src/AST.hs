@@ -3,11 +3,12 @@
 module AST where
 
 import qualified Data.Set as S
-import Lexer
 
 newtype Program = Program [Decl] deriving (Eq)
 
 newtype IntLiteral = IntLiteral Int deriving (Eq, Ord)
+
+data Const = ConstInt Int | ConstLong Int deriving (Eq, Show, Ord)
 
 type Identifier = String
 
@@ -29,14 +30,15 @@ data Stmt
   | DoWhileStmt (Maybe Identifier) Stmt Expr
   | BreakStmt (Maybe Identifier)
   | ContinueStmt (Maybe Identifier)
-  | SwitchStmt (Maybe Identifier) (S.Set IntLiteral) Bool Expr Stmt
+  | SwitchStmt (Maybe Identifier) (S.Set Const) Bool Expr Stmt
   | CaseStmt (Maybe Identifier) Expr Stmt
   | DefaultStmt (Maybe Identifier)
   deriving (Eq)
 
 data Expr
-  = Constant IntLiteral
+  = Constant Const
   | Var Identifier
+  | Cast CType Expr
   | Unary UnaryOp Expr
   | PostFix Expr PostOp
   | Binary BinaryOp Expr Expr
@@ -80,9 +82,28 @@ data Operator
   | C ConditionalOp
   deriving (Eq)
 
-data VarDecl = VarDecl Identifier (Maybe Expr) (Maybe StorageClass) deriving (Eq)
+data CType
+  = CInt
+  | CLong
+  | CFunc [CType] CType
+  deriving (Show, Eq)
 
-data FuncDecl = FuncDecl Identifier [Identifier] (Maybe Block) (Maybe StorageClass) deriving (Eq)
+data VarDecl = VarDecl
+  { varName :: Identifier,
+    varExpr :: Maybe Expr,
+    varType :: CType,
+    varStorage :: Maybe StorageClass
+  }
+  deriving (Eq)
+
+data FuncDecl = FuncDecl
+  { funcName :: Identifier,
+    funcParams :: [Identifier],
+    funcBlock :: Maybe Block,
+    funcType :: CType,
+    funcStorage :: Maybe StorageClass
+  }
+  deriving (Eq)
 
 data Decl = VDecl VarDecl | FDecl FuncDecl deriving (Eq)
 
@@ -191,7 +212,7 @@ instance Show Decl where
 
 instance Show FuncDecl where
   show :: FuncDecl -> String
-  show (FuncDecl name params block storage) =
+  show (FuncDecl name params block ftype storage) =
     "FuncDecl(\n"
       ++ "  name: "
       ++ show name
@@ -202,6 +223,9 @@ instance Show FuncDecl where
       ++ "  block: "
       ++ indent (maybe "None" show block)
       ++ ",\n"
+      ++ "  type: "
+      ++ show ftype
+      ++ ",\n"
       ++ "  storage: "
       ++ show storage
       ++ "\n"
@@ -209,13 +233,16 @@ instance Show FuncDecl where
 
 instance Show VarDecl where
   show :: VarDecl -> String
-  show (VarDecl name expr storage) =
+  show (VarDecl name expr vtype storage) =
     "VarDecl(\n"
       ++ "  name: "
       ++ show name
       ++ ",\n"
-      ++ "  expression: "
+      ++ "  expr: "
       ++ indent (maybe "None" show expr)
+      ++ ",\n"
+      ++ "  type: "
+      ++ show vtype
       ++ ",\n"
       ++ "  storage: "
       ++ show storage

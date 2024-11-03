@@ -155,6 +155,7 @@ isAssignmentOp _ = False
 
 isSpecifier :: Token -> Bool
 isSpecifier TIntKeyword = True
+isSpecifier TLongKeyword = True
 isSpecifier TStaticKeyword = True
 isSpecifier TExternKeyword = True
 isSpecifier _ = False

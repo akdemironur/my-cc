@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
@@ -8,8 +9,10 @@ module Parser where
 
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, some, (<|>))
-import Control.Monad (MonadPlus, mzero, void, when)
+import Control.Monad (MonadPlus, mzero, unless, void, when)
 import Data.Functor (($>), (<&>))
+import Data.List (partition)
+import Data.Maybe (listToMaybe)
 import qualified Data.Set as S
 import Lexer
 
@@ -152,14 +155,14 @@ parseIntLiteral = Parser $ \tokens -> case tokens of
 
 parseVarDecl :: Parser VarDecl
 parseVarDecl = do
-  (_, storageClass) <- parseTypeAndStorageClass
+  (variableType, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
   expr <- optional (parseToken TAssignment *> parseExpr)
   parseToken TSemicolon
-  return (VarDecl name expr storageClass)
+  return (VarDecl name expr variableType storageClass)
 
 parseUExpr :: Parser Expr
-parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr
+parseUExpr = Unary <$> parseUnaryOp <*> parseUExpr <|> parsePExpr <|> parseCastExpr
 
 parsePExpr :: Parser Expr
 parsePExpr = do
@@ -171,7 +174,7 @@ parsePExpr = do
 
 parsePrimaryExpr :: Parser Expr
 parsePrimaryExpr =
-  Constant <$> parseIntLiteral
+  Constant <$> parseConst
     <|> parseFunctionCall
     <|> Var <$> parseIdentifier
     <|> (parseToken TOpenParen *> parseExpr <* parseToken TCloseParen)
@@ -184,6 +187,13 @@ parseFunctionCall = FunctionCall <$> parseIdentifier <*> parseArguments
 
 parseExprPrec :: Int -> Parser Expr
 parseExprPrec minPrec = parseBAExpr minPrec <|> parseUExpr
+
+parseCastExpr :: Parser Expr
+parseCastExpr = do
+  parseToken TOpenParen
+  t <- parseType
+  parseToken TCloseParen
+  Cast t <$> parseCastExpr <|> parseUExpr
 
 parseBAExpr :: Int -> Parser Expr
 parseBAExpr mp = do
@@ -350,60 +360,116 @@ parseBlock = do
 
 parseFunctionJustDecl :: Parser FuncDecl
 parseFunctionJustDecl = do
-  (_, storageClass) <- parseTypeAndStorageClass
+  (functionReturnType, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
-  params <- parseParameters
+  (params, paramTypes) <- parseParameters
+  let functionType = CFunc paramTypes functionReturnType
   parseToken TSemicolon
-  return (FuncDecl name params Nothing storageClass)
+  return (FuncDecl name params Nothing functionType storageClass)
 
 parseFunctionWithBody :: Parser FuncDecl
 parseFunctionWithBody = do
-  (_, storageClass) <- parseTypeAndStorageClass
+  (functionReturnType, storageClass) <- parseTypeAndStorageClass
   name <- parseIdentifier
-  params <- parseParameters
-  FuncDecl name params . Just <$> parseBlock <*> pure storageClass
+  (params, paramTypes) <- parseParameters
+  let functionType = CFunc paramTypes functionReturnType
+  FuncDecl name params . Just <$> parseBlock <*> pure functionType <*> pure storageClass
 
 parseFunction :: Parser FuncDecl
 parseFunction = parseFunctionJustDecl <|> parseFunctionWithBody
 
-parseVoidParameter :: Parser [Identifier]
+parseVoidParameter :: Parser ([Identifier], [CType])
 parseVoidParameter = do
   parseToken TOpenParen
   parseToken TVoidKeyword
   parseToken TCloseParen
-  return []
+  return ([], [])
 
-parseParameterList :: Parser [Identifier]
+parseTypeSpecifier :: Parser Token
+parseTypeSpecifier = Parser $ \tokens -> case tokens of
+  (t : ts) ->
+    if isTypeSpecifier t
+      then Right (t, ts)
+      else Left "No type specifier"
+  _ -> Left "No type specifier"
+
+isTypeSpecifier :: Token -> Bool
+isTypeSpecifier TIntKeyword = True
+isTypeSpecifier TLongKeyword = True
+isTypeSpecifier _ = False
+
+parseType :: Parser CType
+parseType = do
+  typeSpecifiers <- some parseTypeSpecifier
+  case typeSpecifiers of
+    [TIntKeyword] -> return CInt
+    [TLongKeyword] -> return CLong
+    [TIntKeyword, TLongKeyword] -> return CLong
+    [TLongKeyword, TIntKeyword] -> return CLong
+    _ -> fail "Invalid type specifier"
+
+sepBy :: Parser a -> Parser b -> Parser [a]
+sepBy p sep = (:) <$> p <*> many (sep *> p) <|> pure []
+
+parseParameter :: Parser (Identifier, CType)
+parseParameter = do
+  t <- parseType
+  name <- parseIdentifier
+  return (name, t)
+
+parseParameterList :: Parser ([Identifier], [CType])
 parseParameterList = do
   parseToken TOpenParen
-  first_param <- parseToken TIntKeyword *> parseIdentifier
-  rest_params <- many (parseToken TComma *> (parseToken TIntKeyword *> parseIdentifier))
+  params <- parseParameter `sepBy` parseToken TComma
   parseToken TCloseParen
-  return (first_param : rest_params)
+  return (fst <$> params, snd <$> params)
 
-parseParameters :: Parser [Identifier]
-parseParameters = parseVoidParameter <|> parseParameterList
+parseParameters :: Parser ([Identifier], [CType])
+parseParameters = parseParameterList <|> parseVoidParameter
 
 parseSpecifier :: Parser Token
 parseSpecifier = satisfy isSpecifier
 
-parseTypeAndStorageClass :: Parser (Token, Maybe StorageClass)
+parseTypeAndStorageClass :: Parser (CType, Maybe StorageClass)
 parseTypeAndStorageClass = do
   specifiers <- some parseSpecifier
-  let typeSpecifier = filter (== TIntKeyword) specifiers
-  let storageClassSpecifier = filter (/= TIntKeyword) specifiers
-  when (null typeSpecifier) $ fail "No type specifier"
-  when (length typeSpecifier > 1) $ fail "Multiple type specifiers"
-  when (length storageClassSpecifier > 1) $ fail "Multiple storage class specifiers"
-  return (head typeSpecifier, listToMaybe (fmap tokenToStorageClass storageClassSpecifier))
+  let (typeSpecs, storageSpecs) = partition isTypeSpecifier specifiers
+  validateSpecifiers typeSpecs storageSpecs
+  pure (typeSpecsToType typeSpecs, listToMaybe (storageSpecToClass <$> storageSpecs))
   where
-    listToMaybe :: [a] -> Maybe a
-    listToMaybe [] = Nothing
-    listToMaybe (x : _) = Just x
-    tokenToStorageClass :: Token -> StorageClass
-    tokenToStorageClass TExternKeyword = Extern
-    tokenToStorageClass TStaticKeyword = Static
-    tokenToStorageClass t = error $ "Invalid storage class: " ++ show t
+    validateSpecifiers :: [Token] -> [Token] -> Parser ()
+    validateSpecifiers typeSpecs storageSpecs = do
+      when (null typeSpecs) $ fail "No type specifier"
+      when (length typeSpecs > 2) $ fail "Multiple type specifiers"
+      when (length storageSpecs > 1) $ fail "Multiple storage class specifiers"
+      unless (isValidTypeSpecs typeSpecs) $ fail "Invalid type specifier"
+    isValidTypeSpecs :: [Token] -> Bool
+    isValidTypeSpecs specs = specs `elem` validTypeCombos
+      where
+        validTypeCombos =
+          [ [TIntKeyword],
+            [TLongKeyword],
+            [TIntKeyword, TLongKeyword],
+            [TLongKeyword, TIntKeyword]
+          ]
+    typeSpecsToType :: [Token] -> CType
+    typeSpecsToType specs
+      | isLongType specs = CLong
+      | specs == [TIntKeyword] = CInt
+      | otherwise = error "Invalid type" -- Should never happen due to validation
+      where
+        isLongType ts =
+          ts
+            `elem` [ [TLongKeyword],
+                     [TIntKeyword, TLongKeyword],
+                     [TLongKeyword, TIntKeyword]
+                   ]
+
+    storageSpecToClass :: Token -> StorageClass
+    storageSpecToClass = \case
+      TExternKeyword -> Extern
+      TStaticKeyword -> Static
+      t -> error $ "Invalid storage class: " ++ show t
 
 parseArguments :: Parser [Expr]
 parseArguments = do
@@ -420,6 +486,20 @@ parseArguments = do
 
 parseProgram :: Parser Program
 parseProgram = Program <$> some parseDecl
+
+parseConstInt :: Parser Const
+parseConstInt = Parser $ \tokens -> case tokens of
+  (TConstant i : ts) -> Right (ConstInt i, ts)
+  _ -> Left "Expected integer (not long) constant"
+
+parseConstLong :: Parser Const
+parseConstLong = Parser $ \tokens -> case tokens of
+  (TConstant i : ts) -> Right (ConstLong i, ts)
+  (TLongConstant i : ts) -> Right (ConstLong i, ts)
+  _ -> Left "Expected integer constant"
+
+parseConst :: Parser Const
+parseConst = parseConstInt <|> parseConstLong
 
 parse :: [Token] -> Program
 parse tokens = case runParser parseProgram tokens of
