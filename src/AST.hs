@@ -220,7 +220,7 @@ instance OpPrecedence AssignmentOp where
 
 instance Show Program where
   show :: Program -> String
-  show (Program functions) = "Program(\n" ++ indent (unlines (map show functions)) ++ ")"
+  show (Program functions) = "Program(\n" ++ indentAST (unlines (map show functions)) ++ ")"
 
 instance Show BlockItem where
   show :: BlockItem -> String
@@ -243,7 +243,7 @@ instance Show FuncDecl where
       ++ show params
       ++ ",\n"
       ++ "  block: "
-      ++ indent (maybe "None" show block)
+      ++ indentAST (maybe "None" show block)
       ++ ",\n"
       ++ "  type: "
       ++ show ftype
@@ -261,7 +261,7 @@ instance Show VarDecl where
       ++ show name
       ++ ",\n"
       ++ "  expr: "
-      ++ indent (maybe "None" show expr)
+      ++ indentAST (maybe "None" show expr)
       ++ ",\n"
       ++ "  type: "
       ++ show vtype
@@ -273,7 +273,7 @@ instance Show VarDecl where
 
 instance Show Block where
   show :: Block -> String
-  show (Block items) = "Block(\n" ++ indent (unlines (map show items)) ++ ")"
+  show (Block items) = "Block(\n" ++ indentAST (unlines (map show items)) ++ ")"
 
 instance Show IntLiteral where
   show :: IntLiteral -> String
@@ -288,56 +288,56 @@ instance Show Stmt where
   show :: Stmt -> String
   show (ReturnStmt e) =
     "Return(\n"
-      ++ indent (show e)
+      ++ indentAST (show e)
       ++ "\n)"
   show (ExprStmt e) =
     "Expr(\n"
-      ++ indent (show e)
+      ++ indentAST (show e)
       ++ "\n)"
   show (IfStmt e s1 s2) =
     "If(\n"
-      ++ indent ("Condition: " ++ show e)
+      ++ indentAST ("Condition: " ++ show e)
       ++ ",\n"
-      ++ indent ("Then: " ++ show s1)
+      ++ indentAST ("Then: " ++ show s1)
       ++ ",\n"
-      ++ indent ("Else: " ++ maybe "None" show s2)
+      ++ indentAST ("Else: " ++ maybe "None" show s2)
   show NullStmt = "Null"
   show (LabeledStmt i s) = "Label(" ++ show i ++ ", " ++ show s ++ ")"
   show (GotoStmt i) = "Goto(" ++ show i ++ ")"
-  show (CompoundStmt b) = "Compound(\n" ++ indent (show b) ++ ")"
+  show (CompoundStmt b) = "Compound(\n" ++ indentAST (show b) ++ ")"
   show (ForStmt label forinit cond iter stmt) =
     "For(\n"
-      ++ indent ("Label: " ++ maybe "None" show label)
-      ++ indent ("Init: " ++ show forinit)
+      ++ indentAST ("Label: " ++ maybe "None" show label)
+      ++ indentAST ("Init: " ++ show forinit)
       ++ ",\n"
-      ++ indent ("Condition: " ++ maybe "None" show cond)
+      ++ indentAST ("Condition: " ++ maybe "None" show cond)
       ++ ",\n"
-      ++ indent ("Iter: " ++ maybe "None" show iter)
+      ++ indentAST ("Iter: " ++ maybe "None" show iter)
       ++ ",\n"
-      ++ indent ("Body: " ++ show stmt)
+      ++ indentAST ("Body: " ++ show stmt)
       ++ "\n)"
   show (WhileStmt l e s) =
     "While(\n"
-      ++ indent ("Label: " ++ maybe "None" show l)
-      ++ indent ("Condition: " ++ show e)
+      ++ indentAST ("Label: " ++ maybe "None" show l)
+      ++ indentAST ("Condition: " ++ show e)
       ++ ",\n"
-      ++ indent ("Body: " ++ show s)
+      ++ indentAST ("Body: " ++ show s)
       ++ "\n)"
   show (DoWhileStmt l s e) =
     "DoWhile(\n"
-      ++ indent ("Label: " ++ maybe "None" show l)
-      ++ indent ("Body: " ++ show s)
+      ++ indentAST ("Label: " ++ maybe "None" show l)
+      ++ indentAST ("Body: " ++ show s)
       ++ ",\n"
-      ++ indent ("Condition: " ++ show e)
+      ++ indentAST ("Condition: " ++ show e)
       ++ "\n)"
   show (BreakStmt l) = "Break(" ++ maybe "None" show l ++ ")"
   show (ContinueStmt l) = "Continue(" ++ maybe "None" show l ++ ")"
   show (SwitchStmt l _ _ e s) =
     "Switch(\n"
-      ++ indent ("Label: " ++ maybe "None" show l)
-      ++ indent ("Condition: " ++ show e)
+      ++ indentAST ("Label: " ++ maybe "None" show l)
+      ++ indentAST ("Condition: " ++ show e)
       ++ ",\n"
-      ++ indent ("Body: " ++ show s)
+      ++ indentAST ("Body: " ++ show s)
       ++ "\n)"
   show (CaseStmt l e s) = "Case(" ++ maybe "None" show l ++ ",  " ++ show e ++ ", " ++ show s ++ ")"
   show (DefaultStmt l) = "Default(" ++ maybe "None" show l ++ ")"
@@ -351,7 +351,7 @@ instance Show Expr where
       ++ show op
       ++ ",\n"
       ++ "  expression: "
-      ++ indent (show e)
+      ++ indentAST (show e)
       ++ ")"
   show (Binary op e1 e2) =
     "Binary(\n"
@@ -359,18 +359,18 @@ instance Show Expr where
       ++ show op
       ++ ",\n"
       ++ "  left: "
-      ++ indent (show e1)
+      ++ indentAST (show e1)
       ++ ",\n"
       ++ "  right: "
-      ++ indent (show e2)
+      ++ indentAST (show e2)
       ++ "\n"
       ++ ")"
   show (Var s) = "Var(" ++ show s ++ ")"
   show (PostFix e op) =
     "PostFix(\n"
-      ++ indent (show e)
+      ++ indentAST (show e)
       ++ ",\n"
-      ++ indent (show op)
+      ++ indentAST (show op)
       ++ ")"
   show (Assignment op e1 e2) =
     "Assignment("
@@ -383,13 +383,13 @@ instance Show Expr where
   show (Conditional e1 e2 e3) =
     "Conditional(\n"
       ++ "  condition: "
-      ++ indent (show e1)
+      ++ indentAST (show e1)
       ++ ",\n"
       ++ "  then: "
-      ++ indent (show e2)
+      ++ indentAST (show e2)
       ++ ",\n"
       ++ "  else: "
-      ++ indent (show e3)
+      ++ indentAST (show e3)
       ++ "\n"
       ++ ")"
   show (FunctionCall i es) = "FunctionCall(" ++ show i ++ ", " ++ show es ++ ")"
@@ -443,5 +443,5 @@ instance Show AssignmentOp where
   show LeftShiftAssign = "<<="
   show RightShiftAssign = ">>="
 
-indent :: String -> String
-indent = unlines . map ("  " ++) . lines
+indentAST :: String -> String
+indentAST = unlines . map ("  " ++) . lines

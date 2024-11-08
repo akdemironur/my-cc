@@ -7,15 +7,14 @@ module TypeCheck where
 
 import AST
 import Control.Applicative (liftA2)
-import Control.Arrow ((***))
 import Control.Monad.State
 import Data.Bifunctor (first, second)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust, isNothing)
 
 data IdentifierAttrs
-  = FuncAttr Bool Bool
-  | StaticAttr InitialValue Bool
+  = FuncAttr Bool Bool -- Defined, Global
+  | StaticAttr InitialValue Bool -- InitialValue, Global
   | LocalAttr
   deriving (Show, Eq)
 
@@ -29,7 +28,9 @@ data InitialValue
 
 type TypeCheckT a = StateT (SymbolTable, Identifier) (Either String) a
 
-type SymbolTable = M.Map Identifier (CType, IdentifierAttrs)
+type SymbolTableEntry = (CType, IdentifierAttrs)
+
+type SymbolTable = M.Map Identifier SymbolTableEntry
 
 class TypeCheck a where
   typeCheck :: a -> TypeCheckT a
@@ -136,7 +137,10 @@ typeCheckVarDeclLocalScope (VarDecl name expr t (Just Static)) = do
 typeCheckVarDeclLocalScope (VarDecl name expr t Nothing) = do
   typeCheckCompareOldSymbol name t
   modify (first (M.insert name (t, LocalAttr)))
-  VarDecl name <$> traverse typeCheck expr <*> pure t <*> pure Nothing
+  let expr' = case expr of
+        Just e -> Just (convertTo e (Just t))
+        Nothing -> Nothing
+  VarDecl name <$> traverse typeCheck expr' <*> pure t <*> pure Nothing
 
 instance TypeCheck FuncDecl where
   typeCheck :: FuncDecl -> TypeCheckT FuncDecl
@@ -227,13 +231,25 @@ instance TypeCheck TypedExpr where
             if isArithmeticOp op
               then resultType
               else Just CInt
-  typeCheck (TypedExpr (Assignment op lhs rhs) _) = do
-    typedLhs <- typeCheck lhs
-    typedRhs <- typeCheck rhs
-    let leftType = tyType typedLhs
-        convertedRhs = convertTo typedRhs leftType
-        assignExp = Assignment op typedLhs convertedRhs
-    pure $ TypedExpr assignExp leftType
+  typeCheck (TypedExpr (Assignment op lhs rhs) _)
+    | op == Assign || op == LeftShiftAssign || op == RightShiftAssign = do
+        typedLhs <- typeCheck lhs
+        typedRhs <- typeCheck rhs
+        let leftType = tyType typedLhs
+            convertedRhs = convertTo typedRhs leftType
+            assignExp = Assignment op typedLhs convertedRhs
+        pure $ TypedExpr assignExp leftType
+    | otherwise = do
+        typedLhs <- typeCheck lhs
+        typedRhs <- typeCheck rhs
+        let leftType = tyType typedLhs
+            rightType = tyType typedRhs
+            commonType = liftA2 getCommonType leftType rightType
+            convertedLhs = convertTo typedLhs commonType
+            convertedRhs = convertTo typedRhs commonType
+            assignExp = Assignment op convertedLhs convertedRhs
+            typedAssign = TypedExpr assignExp leftType
+        pure typedAssign
   typeCheck (TypedExpr (Conditional cond thenExpr elseExpr) _) = do
     typedCond <- typeCheck cond
     typedThen <- typeCheck thenExpr
