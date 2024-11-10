@@ -1,20 +1,19 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-
-{-# HLINT ignore "Use lambda-case" #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module Parser where
 
 import AST
 import Control.Applicative (Alternative (empty, many), many, optional, some, (<|>))
-import Control.Monad (MonadPlus, guard, mzero, unless, void, when)
+import Control.Monad (MonadPlus, guard, mzero, void, when)
 import Data.Functor (($>), (<&>))
 import Data.List (partition)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromJust, isNothing, listToMaybe)
 import qualified Data.Set as S
 import Lexer
+import Util
 
 data Error t s
   = UnexpedtedEndOfInput
@@ -147,11 +146,6 @@ parseIdentifier :: Parser Identifier
 parseIdentifier = Parser $ \tokens -> case tokens of
   (TIdentifier s : ts) -> Right (s, ts)
   _ -> Left $ "Expected identifier, got: " ++ show (take 10 tokens)
-
-parseIntLiteral :: Parser IntLiteral
-parseIntLiteral = Parser $ \tokens -> case tokens of
-  (TConstant i : ts) -> Right (IntLiteral i, ts)
-  _ -> Left $ "Expected integer literal, got: " ++ show (take 10 tokens)
 
 parseVarDecl :: Parser VarDecl
 parseVarDecl = do
@@ -337,11 +331,7 @@ parseSwitchStmt = do
   SwitchStmt Nothing S.empty False expr <$> parseStmt
 
 parseGotoStmt :: Parser Stmt
-parseGotoStmt = do
-  parseToken TGotoKeyword
-  identifier <- parseIdentifier
-  parseToken TSemicolon
-  return (GotoStmt identifier)
+parseGotoStmt = GotoStmt <$> (parseToken TGotoKeyword *> parseIdentifier <* parseToken TSemicolon)
 
 parseIfStmt :: Parser Stmt
 parseIfStmt = do
@@ -362,11 +352,7 @@ parseDecl :: Parser Decl
 parseDecl = FDecl <$> parseFunction <|> VDecl <$> parseVarDecl
 
 parseBlock :: Parser Block
-parseBlock = do
-  parseToken TOpenBrace
-  items <- many parseBlockItem
-  parseToken TCloseBrace
-  return (Block items)
+parseBlock = parseToken TOpenBrace *> (Block <$> many parseBlockItem) <* parseToken TCloseBrace
 
 parseFunctionJustDecl :: Parser FuncDecl
 parseFunctionJustDecl = do
@@ -396,27 +382,14 @@ parseVoidParameter = do
   return ([], [])
 
 parseTypeSpecifier :: Parser Token
-parseTypeSpecifier = Parser $ \tokens -> case tokens of
-  (t : ts) ->
-    if isTypeSpecifier t
-      then Right (t, ts)
-      else Left "No type specifier"
-  _ -> Left "No type specifier"
-
-isTypeSpecifier :: Token -> Bool
-isTypeSpecifier TIntKeyword = True
-isTypeSpecifier TLongKeyword = True
-isTypeSpecifier _ = False
+parseTypeSpecifier = satisfy isTypeSpecifier
 
 parseType :: Parser CType
 parseType = do
   typeSpecifiers <- some parseTypeSpecifier
-  case typeSpecifiers of
-    [TIntKeyword] -> return CInt
-    [TLongKeyword] -> return CLong
-    [TIntKeyword, TLongKeyword] -> return CLong
-    [TLongKeyword, TIntKeyword] -> return CLong
-    _ -> fail "Invalid type specifier"
+  case specifiersToType typeSpecifiers of
+    Just t -> return t
+    Nothing -> fail "Invalid type specifier combination"
 
 sepBy :: Parser a -> Parser b -> Parser [a]
 sepBy p sep = (:) <$> p <*> many (sep *> p) <|> pure []
@@ -440,40 +413,30 @@ parseParameters = parseParameterList <|> parseVoidParameter
 parseSpecifier :: Parser Token
 parseSpecifier = satisfy isSpecifier
 
+specifiersToType :: [Token] -> Maybe CType
+specifiersToType [] = Nothing
+specifiersToType ss
+  | any (> 1) specifierCounts = Nothing
+  | TSignedKeyword `elem` ss && TUnsignedKeyword `elem` ss = Nothing
+  | TLongKeyword `elem` ss && TUnsignedKeyword `elem` ss = Just CULong
+  | TUnsignedKeyword `elem` ss = Just CUInt
+  | TLongKeyword `elem` ss = Just CLong
+  | otherwise = Just CInt
+  where
+    possibleSpecifiers = [TIntKeyword, TLongKeyword, TUnsignedKeyword, TSignedKeyword, TStaticKeyword, TExternKeyword]
+    specifierCounts = fmap (\s -> length $ filter (== s) ss) possibleSpecifiers
+
 parseTypeAndStorageClass :: Parser (CType, Maybe StorageClass)
 parseTypeAndStorageClass = do
   specifiers <- some parseSpecifier
   let (typeSpecs, storageSpecs) = partition isTypeSpecifier specifiers
   validateSpecifiers typeSpecs storageSpecs
-  pure (typeSpecsToType typeSpecs, listToMaybe (storageSpecToClass <$> storageSpecs))
+  pure (fromJust $ specifiersToType typeSpecs, listToMaybe (storageSpecToClass <$> storageSpecs))
   where
     validateSpecifiers :: [Token] -> [Token] -> Parser ()
     validateSpecifiers typeSpecs storageSpecs = do
-      when (null typeSpecs) $ fail "No type specifier"
-      when (length typeSpecs > 2) $ fail "Multiple type specifiers"
+      when (isNothing (specifiersToType typeSpecs)) $ fail "Invalid type specifier combination"
       when (length storageSpecs > 1) $ fail "Multiple storage class specifiers"
-      unless (isValidTypeSpecs typeSpecs) $ fail "Invalid type specifier"
-    isValidTypeSpecs :: [Token] -> Bool
-    isValidTypeSpecs specs = specs `elem` validTypeCombos
-      where
-        validTypeCombos =
-          [ [TIntKeyword],
-            [TLongKeyword],
-            [TIntKeyword, TLongKeyword],
-            [TLongKeyword, TIntKeyword]
-          ]
-    typeSpecsToType :: [Token] -> CType
-    typeSpecsToType specs
-      | isLongType specs = CLong
-      | specs == [TIntKeyword] = CInt
-      | otherwise = error "Invalid type" -- Should never happen due to validation
-      where
-        isLongType ts =
-          ts
-            `elem` [ [TLongKeyword],
-                     [TIntKeyword, TLongKeyword],
-                     [TLongKeyword, TIntKeyword]
-                   ]
 
     storageSpecToClass :: Token -> StorageClass
     storageSpecToClass = \case
@@ -497,23 +460,23 @@ parseArguments = do
 parseProgram :: Parser Program
 parseProgram = Program <$> some parseDecl
 
-maxInt :: Int
-maxInt = 2 ^ 31 - 1
-
-maxLong :: Int
-maxLong = 2 ^ 63 - 1
-
 orLeft :: Maybe a -> String -> Either String a
 orLeft m msg = maybe (Left msg) Right m
 
 parseConst :: Parser Const
 parseConst = Parser $ \case
   TConstant i : ts -> do
-    guard (i <= maxLong) `orLeft` "Constant is too large to represent as an int or long"
-    Right ((if i <= maxInt then ConstInt else ConstLong) i, ts)
+    guard (validLong i) `orLeft` "Constant is too large to represent as an int or long"
+    Right ((if validInt i then Const CInt else Const CLong) i, ts)
   TLongConstant i : ts -> do
-    guard (i <= maxLong) `orLeft` "Constant is too large to represent as a long"
-    Right (ConstLong i, ts)
+    guard (validLong i) `orLeft` "Constant is too large to represent as a long"
+    Right (Const CLong i, ts)
+  TUnsignedConstant i : ts -> do
+    guard (validULong i) `orLeft` "Constant is too large to represent as an unsigned int or unsigned long"
+    Right ((if validUInt i then Const CUInt else Const CULong) i, ts)
+  TUnsignedLongConstant i : ts -> do
+    guard (validULong i) `orLeft` "Constant is too large to represent as an unsigned long"
+    Right (Const CULong i, ts)
   _ -> Left "Expected integer constant"
 
 parse :: [Token] -> Program

@@ -3,13 +3,31 @@
 
 module AST where
 
+import qualified Data.Map as M
 import qualified Data.Set as S
+
+data IdentifierAttrs
+  = FuncAttr Bool Bool -- Defined, Global
+  | StaticAttr InitialValue Bool -- InitialValue, Global
+  | LocalAttr
+  deriving (Show, Eq)
+
+data StaticInit = StaticInit {initType :: CType, initValue :: Integer}
+  deriving (Show, Eq)
+
+data InitialValue
+  = Tentative
+  | Initial StaticInit
+  | NoInitializer
+  deriving (Show, Eq)
+
+type SymbolTableEntry = (CType, IdentifierAttrs)
+
+type SymbolTable = M.Map Identifier SymbolTableEntry
 
 newtype Program = Program [Decl] deriving (Eq)
 
-newtype IntLiteral = IntLiteral Int deriving (Eq, Ord)
-
-data Const = ConstInt Int | ConstLong Int deriving (Eq, Show, Ord)
+data Const = Const {constType :: CType, constValue :: Integer} deriving (Eq, Show, Ord)
 
 type Identifier = String
 
@@ -40,7 +58,7 @@ data TypedExpr = TypedExpr
   { tyExpr :: Expr,
     tyType :: Maybe CType
   }
-  deriving (Eq, Show)
+  deriving (Eq)
 
 data Expr
   = Constant Const
@@ -101,8 +119,10 @@ data Operator
 data CType
   = CInt
   | CLong
+  | CUInt
+  | CULong
   | CFunc [CType] CType
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 data VarDecl = VarDecl
   { varName :: Identifier,
@@ -224,180 +244,145 @@ instance OpPrecedence AssignmentOp where
   opPrecedence LeftShiftAssign = 1
   opPrecedence RightShiftAssign = 1
 
+indentAST :: String -> String
+indentAST = unlines . map ("  " ++) . lines
+
+showMaybe :: (Show a) => Maybe a -> String
+showMaybe = maybe "None" show
+
+showKeyValue :: String -> String -> String
+showKeyValue key value = key ++ ": " ++ value
+
+showNode :: String -> [String] -> String
+showNode name fields = name ++ "(\n" ++ indentAST (unlines fields) ++ ")"
+
 instance Show Program where
-  show :: Program -> String
-  show (Program functions) = "Program(\n" ++ indentAST (unlines (map show functions)) ++ ")"
+  show (Program functions) = showNode "Program" (map show functions)
 
 instance Show BlockItem where
-  show :: BlockItem -> String
   show (BlockStmt stmt) = show stmt
   show (BlockDecl decl) = show decl
 
 instance Show Decl where
-  show :: Decl -> String
   show (VDecl decl) = show decl
   show (FDecl decl) = show decl
 
 instance Show FuncDecl where
-  show :: FuncDecl -> String
   show (FuncDecl name params block ftype storage) =
-    "FuncDecl(\n"
-      ++ "  name: "
-      ++ show name
-      ++ ",\n"
-      ++ "  params: "
-      ++ show params
-      ++ ",\n"
-      ++ "  block: "
-      ++ indentAST (maybe "None" show block)
-      ++ ",\n"
-      ++ "  type: "
-      ++ show ftype
-      ++ ",\n"
-      ++ "  storage: "
-      ++ show storage
-      ++ "\n"
-      ++ ")"
+    showNode
+      "FuncDecl"
+      [ showKeyValue "name" (show name),
+        showKeyValue "params" (show params),
+        showKeyValue "block" (showMaybe block),
+        showKeyValue "type" (show ftype),
+        showKeyValue "storage" (show storage)
+      ]
 
 instance Show VarDecl where
-  show :: VarDecl -> String
   show (VarDecl name expr vtype storage) =
-    "VarDecl(\n"
-      ++ "  name: "
-      ++ show name
-      ++ ",\n"
-      ++ "  expr: "
-      ++ indentAST (maybe "None" show expr)
-      ++ ",\n"
-      ++ "  type: "
-      ++ show vtype
-      ++ ",\n"
-      ++ "  storage: "
-      ++ show storage
-      ++ "\n"
-      ++ ")"
+    showNode
+      "VarDecl"
+      [ showKeyValue "name" (show name),
+        showKeyValue "expr" (showMaybe expr),
+        showKeyValue "type" (show vtype),
+        showKeyValue "storage" (show storage)
+      ]
 
 instance Show Block where
-  show :: Block -> String
-  show (Block items) = "Block(\n" ++ indentAST (unlines (map show items)) ++ ")"
-
-instance Show IntLiteral where
-  show :: IntLiteral -> String
-  show (IntLiteral i) = show i
+  show (Block items) = showNode "Block" (map show items)
 
 instance Show ForInit where
-  show :: ForInit -> String
   show (InitDecl decl) = "InitDecl(" ++ show decl ++ ")"
-  show (InitExpr e) = "InitExpr(" ++ maybe "None" show e ++ ")"
+  show (InitExpr e) = "InitExpr(" ++ showMaybe e ++ ")"
+
+instance Show TypedExpr where
+  show (TypedExpr e t) = "TypedExpr(" ++ show e ++ ", " ++ showMaybe t ++ ")"
 
 instance Show Stmt where
-  show :: Stmt -> String
-  show (ReturnStmt e) =
-    "Return(\n"
-      ++ indentAST (show e)
-      ++ "\n)"
-  show (ExprStmt e) =
-    "Expr(\n"
-      ++ indentAST (show e)
-      ++ "\n)"
+  show (ReturnStmt e) = showNode "Return" [show e]
+  show (ExprStmt e) = showNode "Expr" [show e]
   show (IfStmt e s1 s2) =
-    "If(\n"
-      ++ indentAST ("Condition: " ++ show e)
-      ++ ",\n"
-      ++ indentAST ("Then: " ++ show s1)
-      ++ ",\n"
-      ++ indentAST ("Else: " ++ maybe "None" show s2)
+    showNode
+      "If"
+      [ showKeyValue "Condition" (show e),
+        showKeyValue "Then" (show s1),
+        showKeyValue "Else" (showMaybe s2)
+      ]
   show NullStmt = "Null"
   show (LabeledStmt i s) = "Label(" ++ show i ++ ", " ++ show s ++ ")"
   show (GotoStmt i) = "Goto(" ++ show i ++ ")"
-  show (CompoundStmt b) = "Compound(\n" ++ indentAST (show b) ++ ")"
+  show (CompoundStmt b) = showNode "Compound" [show b]
   show (ForStmt label forinit cond iter stmt) =
-    "For(\n"
-      ++ indentAST ("Label: " ++ maybe "None" show label)
-      ++ indentAST ("Init: " ++ show forinit)
-      ++ ",\n"
-      ++ indentAST ("Condition: " ++ maybe "None" show cond)
-      ++ ",\n"
-      ++ indentAST ("Iter: " ++ maybe "None" show iter)
-      ++ ",\n"
-      ++ indentAST ("Body: " ++ show stmt)
-      ++ "\n)"
+    showNode
+      "For"
+      [ showKeyValue "Label" (showMaybe label),
+        showKeyValue "Init" (show forinit),
+        showKeyValue "Condition" (showMaybe cond),
+        showKeyValue "Iter" (showMaybe iter),
+        showKeyValue "Body" (show stmt)
+      ]
   show (WhileStmt l e s) =
-    "While(\n"
-      ++ indentAST ("Label: " ++ maybe "None" show l)
-      ++ indentAST ("Condition: " ++ show e)
-      ++ ",\n"
-      ++ indentAST ("Body: " ++ show s)
-      ++ "\n)"
+    showNode
+      "While"
+      [ showKeyValue "Label" (showMaybe l),
+        showKeyValue "Condition" (show e),
+        showKeyValue "Body" (show s)
+      ]
   show (DoWhileStmt l s e) =
-    "DoWhile(\n"
-      ++ indentAST ("Label: " ++ maybe "None" show l)
-      ++ indentAST ("Body: " ++ show s)
-      ++ ",\n"
-      ++ indentAST ("Condition: " ++ show e)
-      ++ "\n)"
-  show (BreakStmt l) = "Break(" ++ maybe "None" show l ++ ")"
-  show (ContinueStmt l) = "Continue(" ++ maybe "None" show l ++ ")"
+    showNode
+      "DoWhile"
+      [ showKeyValue "Label" (showMaybe l),
+        showKeyValue "Body" (show s),
+        showKeyValue "Condition" (show e)
+      ]
+  show (BreakStmt l) = "Break(" ++ showMaybe l ++ ")"
+  show (ContinueStmt l) = "Continue(" ++ showMaybe l ++ ")"
   show (SwitchStmt l _ _ e s) =
-    "Switch(\n"
-      ++ indentAST ("Label: " ++ maybe "None" show l)
-      ++ indentAST ("Condition: " ++ show e)
-      ++ ",\n"
-      ++ indentAST ("Body: " ++ show s)
-      ++ "\n)"
-  show (CaseStmt l e s) = "Case(" ++ maybe "None" show l ++ ",  " ++ show e ++ ", " ++ show s ++ ")"
-  show (DefaultStmt l) = "Default(" ++ maybe "None" show l ++ ")"
+    showNode
+      "Switch"
+      [ showKeyValue "Label" (showMaybe l),
+        showKeyValue "Condition" (show e),
+        showKeyValue "Body" (show s)
+      ]
+  show (CaseStmt l e s) = "Case(" ++ showMaybe l ++ ", " ++ show e ++ ", " ++ show s ++ ")"
+  show (DefaultStmt l) = "Default(" ++ showMaybe l ++ ")"
 
 instance Show Expr where
-  show :: Expr -> String
   show (Constant i) = "Constant(" ++ show i ++ ")"
   show (Unary op e) =
-    "Unary(\n"
-      ++ "  operator: "
-      ++ show op
-      ++ ",\n"
-      ++ "  expression: "
-      ++ indentAST (show e)
-      ++ ")"
+    showNode
+      "Unary"
+      [ showKeyValue "operator" (show op),
+        showKeyValue "expression" (show e)
+      ]
   show (Binary op e1 e2) =
-    "Binary(\n"
-      ++ "  operator: "
-      ++ show op
-      ++ ",\n"
-      ++ "  left: "
-      ++ indentAST (show e1)
-      ++ ",\n"
-      ++ "  right: "
-      ++ indentAST (show e2)
-      ++ "\n"
-      ++ ")"
+    showNode
+      "Binary"
+      [ showKeyValue "operator" (show op),
+        showKeyValue "left" (show e1),
+        showKeyValue "right" (show e2)
+      ]
   show (Var s) = "Var(" ++ show s ++ ")"
   show (PostFix e op) =
-    "PostFix(\n"
-      ++ indentAST (show e)
-      ++ ",\n"
-      ++ indentAST (show op)
-      ++ ")"
+    showNode
+      "PostFix"
+      [ show e,
+        show op
+      ]
   show (Assignment op e1 e2) =
-    "Assignment("
-      ++ show op
-      ++ ", "
-      ++ show e1
-      ++ ", "
-      ++ show e2
-      ++ ")"
+    showNode
+      "Assignment"
+      [ showKeyValue "operator" (show op),
+        showKeyValue "left" (show e1),
+        showKeyValue "right" (show e2)
+      ]
   show (Conditional e1 e2 e3) =
-    "Conditional(\n"
-      ++ "  condition: "
-      ++ indentAST (show e1)
-      ++ ",\n"
-      ++ "  then: "
-      ++ indentAST (show e2)
-      ++ ",\n"
-      ++ "  else: "
-      ++ indentAST (show e3)
-      ++ "\n"
-      ++ ")"
+    showNode
+      "Conditional"
+      [ showKeyValue "condition" (show e1),
+        showKeyValue "then" (show e2),
+        showKeyValue "else" (show e3)
+      ]
   show (FunctionCall i es) = "FunctionCall(" ++ show i ++ ", " ++ show es ++ ")"
   show (Cast t e) = "Cast(" ++ show t ++ ", " ++ show e ++ ")"
 
@@ -448,6 +433,3 @@ instance Show AssignmentOp where
   show BitwiseXorAssign = "^="
   show LeftShiftAssign = "<<="
   show RightShiftAssign = ">>="
-
-indentAST :: String -> String
-indentAST = unlines . map ("  " ++) . lines

@@ -7,7 +7,6 @@ import Control.Monad.State
 import qualified Data.Map as M
 import Data.Maybe (fromJust)
 import qualified Data.Set as S
-import TypeCheck
 import Util
 
 type CaseMap = M.Map String (S.Set Const)

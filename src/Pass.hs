@@ -2,7 +2,7 @@
 
 module Pass where
 
-import AST (Program)
+import AST
 import CaseResolve
 import LabelResolve
 import LoopLabeling

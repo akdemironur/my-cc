@@ -1,13 +1,6 @@
-module Lexer
-  ( lex,
-    isAssignmentOp,
-    isBinOp,
-    isPostOp,
-    isUnOp,
-    isSpecifier,
-    Token (..),
-  )
-where
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
+
+module Lexer where
 
 import Data.Char (isSpace)
 import Data.List (intercalate)
@@ -17,8 +10,10 @@ import Prelude hiding (lex)
 
 data Token
   = TIdentifier String
-  | TConstant Int
-  | TLongConstant Int
+  | TConstant Integer
+  | TUnsignedConstant Integer
+  | TLongConstant Integer
+  | TUnsignedLongConstant Integer
   | TOpenParen
   | TCloseParen
   | TOpenBrace
@@ -77,7 +72,12 @@ data Token
   | TExternKeyword
   | TStaticKeyword
   | TLongKeyword
-  deriving (Show, Eq)
+  | TUnsignedKeyword
+  | TSignedKeyword
+  deriving
+    ( Show,
+      Eq
+    )
 
 keywords :: [String]
 keywords =
@@ -97,7 +97,9 @@ keywords =
     "default",
     "extern",
     "static",
-    "long"
+    "long",
+    "unsigned",
+    "signed"
   ]
 
 identifierRegex :: String
@@ -154,11 +156,19 @@ isAssignmentOp TRightShiftAssignment = True
 isAssignmentOp _ = False
 
 isSpecifier :: Token -> Bool
-isSpecifier TIntKeyword = True
-isSpecifier TLongKeyword = True
-isSpecifier TStaticKeyword = True
-isSpecifier TExternKeyword = True
-isSpecifier _ = False
+isSpecifier t = isStorageSpecifier t || isTypeSpecifier t
+
+isStorageSpecifier :: Token -> Bool
+isStorageSpecifier TStaticKeyword = True
+isStorageSpecifier TExternKeyword = True
+isStorageSpecifier _ = False
+
+isTypeSpecifier :: Token -> Bool
+isTypeSpecifier TIntKeyword = True
+isTypeSpecifier TLongKeyword = True
+isTypeSpecifier TSignedKeyword = True
+isTypeSpecifier TUnsignedKeyword = True
+isTypeSpecifier _ = False
 
 tokenRegexes :: [TokenRegex]
 tokenRegexes =
@@ -177,8 +187,10 @@ tokenRegexes =
     ("\\A\\*(?!=)", const TAsterisk),
     ("\\A/(?!=)", const TSlash),
     ("\\A%(?!=)", const TPercent),
+    ("\\A[0-9]+([lL][uU]|[uU][lL])\\b", TUnsignedLongConstant . read . init . init),
     ("\\A[0-9]+\\b", TConstant . read),
     ("\\A[0-9]+(l|L)\\b", TLongConstant . read . init),
+    ("\\A[0-9]+(u|U)\\b", TUnsignedConstant . read . init),
     ("\\A\\(", const TOpenParen),
     ("\\A\\)", const TCloseParen),
     ("\\A{", const TOpenBrace),
@@ -222,7 +234,9 @@ tokenRegexes =
     ("\\A,", const TComma),
     ("\\Aextern\\b", const TExternKeyword),
     ("\\Astatic\\b", const TStaticKeyword),
-    ("\\Along\\b", const TLongKeyword)
+    ("\\Along\\b", const TLongKeyword),
+    ("\\Aunsigned\\b", const TUnsignedKeyword),
+    ("\\Asigned\\b", const TSignedKeyword)
   ]
 
 matchRegex :: String -> TokenRegex -> Maybe (Token, String)

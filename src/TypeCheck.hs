@@ -1,7 +1,6 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module TypeCheck where
 
@@ -13,25 +12,7 @@ import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust, isNothing)
 import Util
 
-data IdentifierAttrs
-  = FuncAttr Bool Bool -- Defined, Global
-  | StaticAttr InitialValue Bool -- InitialValue, Global
-  | LocalAttr
-  deriving (Show, Eq)
-
-data StaticInit = IntInit Int | LongInit Int deriving (Show, Eq)
-
-data InitialValue
-  = Tentative
-  | Initial StaticInit
-  | NoInitializer
-  deriving (Show, Eq)
-
 type TypeCheckT a = StateT (SymbolTable, Identifier) (Either String) a
-
-type SymbolTableEntry = (CType, IdentifierAttrs)
-
-type SymbolTable = M.Map Identifier SymbolTableEntry
 
 class TypeCheck a where
   typeCheck :: a -> TypeCheckT a
@@ -60,8 +41,7 @@ typeCheckDeclFileScope (VDecl decl) = VDecl <$> typeCheckVarDeclFileScope decl
 typeCheckDeclFileScope (FDecl decl) = FDecl <$> typeCheck decl
 
 initialValueT :: Maybe Expr -> Maybe StorageClass -> TypeCheckT InitialValue
-initialValueT (Just (Constant (ConstInt c))) _ = return $ Initial (IntInit c)
-initialValueT (Just (Constant (ConstLong c))) _ = return $ Initial (LongInit c)
+initialValueT (Just (Constant c)) _ = return . Initial $ constToInit c
 initialValueT Nothing (Just Extern) = return NoInitializer
 initialValueT Nothing _ = return Tentative
 initialValueT _ _ = lift . Left $ "Non constant initializer for variable"
@@ -124,14 +104,21 @@ typeCheckVarDeclLocalScope (VarDecl name expr t (Just Static)) = do
     Nothing -> return ()
     _ -> lift . Left $ "Non constant initializer for static variable: " ++ show name
   let iv = case expr of
-        Just (TypedExpr (Constant (ConstInt c)) _) -> Initial (IntInit c)
-        Just (TypedExpr (Constant (ConstLong c)) _) ->
+        Just (TypedExpr (Constant (Const CInt c)) _) -> Initial (StaticInit CInt c)
+        Just (TypedExpr (Constant (Const CLong c)) _) ->
           Initial
             ( if t == CLong
-                then LongInit c
-                else IntInit (if is32BitRange c then reduceLong c else c)
+                then StaticInit CLong c
+                else StaticInit CInt (if validInt c then reduceLong c else c)
             )
-        Nothing -> Initial (IntInit 0)
+        Just (TypedExpr (Constant (Const CUInt c)) _) -> Initial (StaticInit CUInt c)
+        Just (TypedExpr (Constant (Const CULong c)) _) ->
+          Initial
+            ( if t == CULong
+                then StaticInit CULong c
+                else StaticInit CUInt (if validUInt c then c else reduceLong c)
+            )
+        Nothing -> Initial (StaticInit CInt 0)
         _ -> error "Unreachable"
   modify (first (M.insert name (t, StaticAttr iv False)))
   VarDecl name <$> traverse typeCheck expr <*> pure t <*> pure (Just Static)
@@ -158,7 +145,7 @@ instance TypeCheck FuncDecl where
         modify (first (M.insert name (ftype, attrs)))
       Nothing -> modify (first (M.insert name (ftype, FuncAttr hasBody global)))
       _ -> lift . Left $ "Function " ++ show name ++ " already declared as variable"
-    let argTypes = (\(CFunc argTypes _) -> argTypes) ftype
+    let argTypes = (\(CFunc argTypes' _) -> argTypes') ftype
     modify . first . M.union . M.fromList $ zipWith (\arg argType -> (arg, (argType, LocalAttr))) args argTypes
     if hasBody
       then do
@@ -192,15 +179,6 @@ instance TypeCheck Stmt where
   typeCheck (BreakStmt l) = return $ BreakStmt l
   typeCheck NullStmt = return NullStmt
 
-isFunction :: Maybe CType -> Bool
-isFunction (Just (CFunc _ _)) = True
-isFunction _ = False
-
-convertTo :: TypedExpr -> Maybe CType -> TypedExpr
-convertTo e@(TypedExpr expr t1) t2
-  | t1 == t2 = TypedExpr expr t1
-  | otherwise = TypedExpr (Cast (fromJust t2) e) t2
-
 instance TypeCheck TypedExpr where
   typeCheck (TypedExpr (Var identifier) _) = do
     symbol <- lookupSymbol identifier
@@ -208,8 +186,7 @@ instance TypeCheck TypedExpr where
     let oldType = fmap fst symbol
     when (isFunction oldType) . lift . Left $ "Function name used as variable: " ++ show identifier
     return $ TypedExpr (Var identifier) oldType
-  typeCheck (TypedExpr c@(Constant (ConstInt _)) _) = return $ TypedExpr c (Just CInt)
-  typeCheck (TypedExpr c@(Constant (ConstLong _)) _) = return $ TypedExpr c (Just CLong)
+  typeCheck (TypedExpr c@(Constant ic) _) = return $ TypedExpr c (Just $ constType ic)
   typeCheck (TypedExpr (Cast targetType expr) _) = (TypedExpr . Cast targetType <$> typeCheck expr) <*> pure (Just targetType)
   typeCheck (TypedExpr (Unary Not expr) _) = (TypedExpr . Unary Not <$> typeCheck expr) <*> pure (Just CInt)
   typeCheck (TypedExpr (Unary op expr) _) = (TypedExpr . Unary op <$> typeCheck expr) <*> (tyType <$> typeCheck expr)
