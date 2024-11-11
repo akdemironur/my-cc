@@ -2,10 +2,10 @@
 
 module Lexer where
 
-import Data.Char (isSpace)
-import Data.List (intercalate)
+import Data.Char (isDigit, isSpace)
+import Data.List (intercalate, isInfixOf)
 import Data.Maybe (mapMaybe)
-import Text.Regex.PCRE ((=~))
+import Text.Regex.PCRE (RegexContext (match), (=~))
 import Prelude hiding (lex)
 
 data Token
@@ -14,6 +14,7 @@ data Token
   | TUnsignedConstant Integer
   | TLongConstant Integer
   | TUnsignedLongConstant Integer
+  | TDoubleConstant Double
   | TOpenParen
   | TCloseParen
   | TOpenBrace
@@ -74,6 +75,7 @@ data Token
   | TLongKeyword
   | TUnsignedKeyword
   | TSignedKeyword
+  | TDoubleKeyword
   deriving
     ( Show,
       Eq
@@ -99,7 +101,8 @@ keywords =
     "static",
     "long",
     "unsigned",
-    "signed"
+    "signed",
+    "double"
   ]
 
 identifierRegex :: String
@@ -168,6 +171,7 @@ isTypeSpecifier TIntKeyword = True
 isTypeSpecifier TLongKeyword = True
 isTypeSpecifier TSignedKeyword = True
 isTypeSpecifier TUnsignedKeyword = True
+isTypeSpecifier TDoubleKeyword = True
 isTypeSpecifier _ = False
 
 tokenRegexes :: [TokenRegex]
@@ -187,6 +191,7 @@ tokenRegexes =
     ("\\A\\*(?!=)", const TAsterisk),
     ("\\A/(?!=)", const TSlash),
     ("\\A%(?!=)", const TPercent),
+    ("\\A(([0-9]*\\.[0-9]+|[0-9]+\\.?)[Ee][+-]?[0-9]+|[0-9]*\\.[0-9]+|[0-9]+\\.)[^\\w.]", TDoubleConstant . read . makeDoubleLiteral),
     ("\\A[0-9]+([lL][uU]|[uU][lL])\\b", TUnsignedLongConstant . read . init . init),
     ("\\A[0-9]+\\b", TConstant . read),
     ("\\A[0-9]+(l|L)\\b", TLongConstant . read . init),
@@ -236,22 +241,67 @@ tokenRegexes =
     ("\\Astatic\\b", const TStaticKeyword),
     ("\\Along\\b", const TLongKeyword),
     ("\\Aunsigned\\b", const TUnsignedKeyword),
-    ("\\Asigned\\b", const TSignedKeyword)
+    ("\\Asigned\\b", const TSignedKeyword),
+    ("\\Adouble\\b", const TDoubleKeyword)
   ]
 
-matchRegex :: String -> TokenRegex -> Maybe (Token, String)
+trim :: String -> String
+trim = f . f
+  where
+    f = reverse . dropWhile isSpace
+
+replace :: Char -> String -> String -> String
+replace target replacement input =
+  let parts = splitOn target input
+   in intercalate replacement parts
+  where
+    splitOn :: Char -> String -> [String]
+    splitOn _ "" = [""]
+    splitOn delim str = case break (== delim) str of
+      (before, after) ->
+        before : case after of
+          [] -> []
+          xs -> splitOn delim (tail xs)
+
+matchRegex :: String -> TokenRegex -> Maybe (Token, String, [String], String)
 matchRegex input (regex, makeToken) =
-  case input =~ regex :: (String, String, String) of
-    (_, match, rest)
-      | not (null match) -> Just (makeToken match, rest)
+  case input =~ regex :: (String, String, String, [String]) of
+    (_, match', rest, groups)
+      | not (null match') -> Just (makeToken match', rest, groups, match')
     _ -> Nothing
+
+dropWhileSame :: (Eq a) => [a] -> [a] -> [a]
+dropWhileSame ys [] = ys
+dropWhileSame [] xs = xs
+dropWhileSame (y : ys) (x : xs)
+  | x == y = dropWhileSame ys xs
+  | otherwise = x : xs
+
+takeWhileSame :: (Eq a) => [a] -> [a] -> [a]
+takeWhileSame _ [] = []
+takeWhileSame [] _ = []
+takeWhileSame (y : ys) (x : xs)
+  | x == y = x : takeWhileSame ys xs
+  | otherwise = []
 
 lex :: String -> [Token]
 lex "" = []
 lex input'
   | null input = []
   | null matches = error $ "No match found for input: " ++ input'
-  | otherwise = (fst . head $ matches) : lex (snd . head $ matches)
+  | otherwise = token : lex rest'
   where
     input = dropWhile isSpace input'
     matches = mapMaybe (matchRegex input) tokenRegexes
+    (token, rest, groups, match') = head matches
+    rest' = case token of
+      TDoubleConstant _ -> dropWhileSame (head groups) match' ++ rest
+      _ -> rest
+
+makeDoubleLiteral :: String -> String
+makeDoubleLiteral s
+  | head s == '.' = makeDoubleLiteral ("0" ++ s)
+  | last s == '.' = makeDoubleLiteral (s ++ "0")
+  | ".e" `isInfixOf` s || ".E" `isInfixOf` s = makeDoubleLiteral (replace '.' ".0" s)
+  | not (isDigit (last s)) = makeDoubleLiteral (init s)
+  | otherwise = s

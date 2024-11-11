@@ -87,6 +87,7 @@ compileToAssembly inputFile = do
   assemblyContent <-
     preprocess inputFile
       <&> ( codeEmission
+              . fst
               . codegen
               . toTACProg
               . resolveAll

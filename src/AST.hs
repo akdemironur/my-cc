@@ -9,11 +9,11 @@ import qualified Data.Set as S
 data IdentifierAttrs
   = FuncAttr Bool Bool -- Defined, Global
   | StaticAttr InitialValue Bool -- InitialValue, Global
+  | StaticConst Const
   | LocalAttr
   deriving (Show, Eq)
 
-data StaticInit = StaticInit {initType :: CType, initValue :: Integer}
-  deriving (Show, Eq)
+newtype StaticInit = StaticInit Const deriving (Show, Eq)
 
 data InitialValue
   = Tentative
@@ -27,7 +27,50 @@ type SymbolTable = M.Map Identifier SymbolTableEntry
 
 newtype Program = Program [Decl] deriving (Eq)
 
-data Const = Const {constType :: CType, constValue :: Integer} deriving (Eq, Show, Ord)
+data CType
+  = CInt
+  | CLong
+  | CUInt
+  | CULong
+  | CDouble
+  | CFunc [CType] CType
+  deriving (Show, Eq, Ord)
+
+data Const
+  = IntConst CType Integer
+  | DoubleConst CType Double
+  deriving (Show)
+
+instance Eq Const where
+  (IntConst c1 i1) == (IntConst c2 i2) = c1 == c2 && i1 == i2
+  (DoubleConst t1 d1) == (DoubleConst t2 d2) =
+    t1 == t2
+      && ( (isNaN d1 && isNaN d2)
+             || ( case (isNegativeZero d1, isNegativeZero d2) of
+                    (True, True) -> True
+                    (True, False) -> False
+                    (False, True) -> False
+                    (False, False) -> d1 == d2
+                )
+         )
+  _ == _ = False
+
+instance Ord Const where
+  compare (IntConst c1 i1) (IntConst c2 i2) =
+    compare (c1, i1) (c2, i2)
+  compare (DoubleConst t1 d1) (DoubleConst t2 d2) =
+    case compare t1 t2 of
+      EQ ->
+        if isNaN d1 || isNaN d2
+          then EQ -- This makes NaN equal to itself
+          else case (isNegativeZero d1, isNegativeZero d2) of
+            (True, True) -> EQ
+            (True, False) -> LT -- -0.0 < 0.0
+            (False, True) -> GT -- 0.0 > -0.0
+            (False, False) -> compare d1 d2
+      other -> other
+  compare (DoubleConst _ _) (IntConst _ _) = GT
+  compare (IntConst _ _) (DoubleConst _ _) = LT
 
 type Identifier = String
 
@@ -84,7 +127,7 @@ data AssignmentOp
   | BitwiseXorAssign
   | LeftShiftAssign
   | RightShiftAssign
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 isCompoundArithmeticOp :: AssignmentOp -> Bool
 isCompoundArithmeticOp = (`elem` [PlusAssign, MinusAssign, MultiplyAssign, DivideAssign, RemainderAssign])
@@ -101,12 +144,12 @@ data UnaryOp
   | Not
   | PreIncrement
   | PreDecrement
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 data PostOp
   = PostIncrement
   | PostDecrement
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 data Operator
   = U UnaryOp
@@ -114,15 +157,7 @@ data Operator
   | P PostOp
   | A AssignmentOp
   | C ConditionalOp
-  deriving (Eq)
-
-data CType
-  = CInt
-  | CLong
-  | CUInt
-  | CULong
-  | CFunc [CType] CType
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord)
 
 data VarDecl = VarDecl
   { varName :: Identifier,
@@ -154,7 +189,7 @@ data BlockItem
 
 data ConditionalOp
   = ConditionalOp
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 data BinaryOp
   = Add
@@ -175,7 +210,7 @@ data BinaryOp
   | LessThanOrEqualTo
   | GreaterThan
   | GreaterThanOrEqualTo
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 isLogicalOp :: BinaryOp -> Bool
 isLogicalOp = (`elem` [And, Or])

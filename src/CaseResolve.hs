@@ -50,6 +50,7 @@ instance CaseResolve Decl where
 
 instance CaseResolve Stmt where
   resolve :: Stmt -> CaseResolveT Stmt
+  resolve (CaseStmt _ (TypedExpr (Constant (DoubleConst _ _)) _) _) = lift $ Left "Case with double, this should not happen"
   resolve (CaseStmt (Just name) (TypedExpr (Constant i') _) stmt) = do
     (caseMap, defaultMap, switchTypeMap) <- get
     let caseSet = M.findWithDefault S.empty name caseMap

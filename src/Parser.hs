@@ -416,14 +416,16 @@ parseSpecifier = satisfy isSpecifier
 specifiersToType :: [Token] -> Maybe CType
 specifiersToType [] = Nothing
 specifiersToType ss
+  | filter isTypeSpecifier ss == [TDoubleKeyword] = Just CDouble
   | any (> 1) specifierCounts = Nothing
+  | TDoubleKeyword `elem` ss = Nothing
   | TSignedKeyword `elem` ss && TUnsignedKeyword `elem` ss = Nothing
   | TLongKeyword `elem` ss && TUnsignedKeyword `elem` ss = Just CULong
   | TUnsignedKeyword `elem` ss = Just CUInt
   | TLongKeyword `elem` ss = Just CLong
   | otherwise = Just CInt
   where
-    possibleSpecifiers = [TIntKeyword, TLongKeyword, TUnsignedKeyword, TSignedKeyword, TStaticKeyword, TExternKeyword]
+    possibleSpecifiers = [TDoubleKeyword, TIntKeyword, TLongKeyword, TUnsignedKeyword, TSignedKeyword, TStaticKeyword, TExternKeyword]
     specifierCounts = fmap (\s -> length $ filter (== s) ss) possibleSpecifiers
 
 parseTypeAndStorageClass :: Parser (CType, Maybe StorageClass)
@@ -467,17 +469,18 @@ parseConst :: Parser Const
 parseConst = Parser $ \case
   TConstant i : ts -> do
     guard (validLong i) `orLeft` "Constant is too large to represent as an int or long"
-    Right ((if validInt i then Const CInt else Const CLong) i, ts)
+    Right ((if validInt i then IntConst CInt else IntConst CLong) i, ts)
   TLongConstant i : ts -> do
     guard (validLong i) `orLeft` "Constant is too large to represent as a long"
-    Right (Const CLong i, ts)
+    Right (IntConst CLong i, ts)
   TUnsignedConstant i : ts -> do
     guard (validULong i) `orLeft` "Constant is too large to represent as an unsigned int or unsigned long"
-    Right ((if validUInt i then Const CUInt else Const CULong) i, ts)
+    Right ((if validUInt i then IntConst CUInt else IntConst CULong) i, ts)
   TUnsignedLongConstant i : ts -> do
     guard (validULong i) `orLeft` "Constant is too large to represent as an unsigned long"
-    Right (Const CULong i, ts)
-  _ -> Left "Expected integer constant"
+    Right (IntConst CULong i, ts)
+  TDoubleConstant d : ts -> Right (DoubleConst CDouble d, ts)
+  _ -> Left "Expected constant"
 
 parse :: [Token] -> Program
 parse tokens = case runParser parseProgram tokens of

@@ -5,6 +5,7 @@ module VarResolve where
 
 import AST
 import Control.Applicative ((<|>))
+import Control.Monad.Except (throwError)
 import Control.Monad.State
 import qualified Data.Map as M
 import Data.Maybe (isJust)
@@ -24,9 +25,9 @@ declareVarT sc name = do
   let oldDecl = lookupVarLink name scope
   let inCurrentScope = isDeclaredInCurrentScope name scope
   case (inCurrentScope, oldDecl, sc) of
-    (True, Just (_, _), Nothing) -> lift . Left $ "Variable " ++ name ++ " already declared."
-    (True, Just (_, False), _) -> lift . Left $ "Conflicting linkage for variable: " ++ name
-    (True, Just _, Just Static) -> lift . Left $ "Conflicting linkage for variable: " ++ name
+    (True, Just (_, _), Nothing) -> throwError $ "Variable " ++ name ++ " already declared."
+    (True, Just (_, False), _) -> throwError $ "Conflicting linkage for variable: " ++ name
+    (True, Just _, Just Static) -> throwError $ "Conflicting linkage for variable: " ++ name
     _ -> return ()
   let identifier' = name ++ "." ++ show num
   put (ScopeVarMap (M.insert name (identifier', sc == Just Extern) varMap) parent, num + 1)

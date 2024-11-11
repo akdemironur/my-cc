@@ -15,6 +15,25 @@ import qualified Data.Map as M
 import Data.Maybe (fromJust)
 import qualified Foreign.C.Types as CT
 
+intRegisters :: [AsmReg]
+intRegisters = [DI, SI, DX, CX, R8, R9]
+
+dblRegisters :: [AsmReg]
+dblRegisters = [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7]
+
+returnRegister :: AsmType -> AsmReg
+returnRegister AsmDouble = XMM0
+returnRegister _ = AX
+
+dblUpperBoundConst :: Const
+dblUpperBoundConst = DoubleConst CDouble (2.0 ** 63)
+
+negZeroConst :: Const
+negZeroConst = DoubleConst CDouble (-0.0)
+
+zeroOutRegister :: AsmReg -> AsmInstruction
+zeroOutRegister r = AsmBinary AsmXor AsmDouble (Register r) (Register r)
+
 data SCType (t :: CType) where
   SInt :: SCType 'CInt
   SUInt :: SCType 'CUInt
@@ -33,6 +52,7 @@ toSCType CUInt f = f SUInt
 toSCType CLong f = f SLong
 toSCType CULong f = f SULong
 toSCType (CFunc _ _) _ = error "Function type in toSCType"
+toSCType CDouble _ = error "Double type in toSCType"
 
 cast :: CType -> CType -> Integer -> Integer
 cast srcType destType x =
@@ -41,6 +61,11 @@ cast srcType destType x =
       if srcType == destType
         then x
         else fromIntegral (fromIntegral (fromIntegral x :: ToCType s) :: ToCType d)
+
+castFromDouble :: CType -> Double -> Integer
+castFromDouble dstType x =
+  toSCType dstType $ \(_ :: SCType d) ->
+    fromIntegral (fromIntegral (truncate x :: Integer) :: ToCType d)
 
 roundAwayFromZero :: Integer -> Integer -> Integer
 roundAwayFromZero n x
@@ -62,10 +87,25 @@ validULong x = x >= 0 && x <= 18446744073709551615
 
 convertConst :: CType -> Const -> Const
 convertConst (CFunc _ _) _ = error "Function type in convertConst"
-convertConst trgType c = Const trgType (cast (constType c) trgType (constValue c))
+convertConst CDouble (IntConst _ x) = DoubleConst CDouble (fromIntegral x)
+convertConst CDouble (DoubleConst _ x) = DoubleConst CDouble x
+convertConst trgType (IntConst srcType srcVal) = IntConst trgType (cast srcType trgType srcVal)
+convertConst trgType (DoubleConst _ x) = IntConst trgType (castFromDouble trgType x)
 
 constToInit :: Const -> StaticInit
-constToInit (Const x y) = StaticInit x y
+constToInit = StaticInit
+
+constType :: Const -> CType
+constType (IntConst CDouble _) = error "IntConst with double type"
+constType (IntConst ty _) = ty
+constType (DoubleConst CDouble _) = CDouble
+constType (DoubleConst _ _) = error "DoubleConst with non-double type"
+
+isIntegral :: Maybe CType -> Bool
+isIntegral (Just CDouble) = False
+isIntegral (Just (CFunc _ _)) = False
+isIntegral Nothing = False
+isIntegral _ = True
 
 reduceLong :: Integer -> Integer
 reduceLong x = x - y
@@ -76,6 +116,7 @@ reduceLong x = x - y
 signed :: CType -> Bool
 signed CInt = True
 signed CLong = True
+signed CDouble = True
 signed _ = False
 
 getCommonType :: CType -> CType -> CType
@@ -83,6 +124,7 @@ getCommonType (CFunc _ _) _ = error "Function type in getCommonType"
 getCommonType _ (CFunc _ _) = error "Function type in getCommonType"
 getCommonType t1 t2
   | t1 == t2 = t1
+  | t1 == CDouble || t2 == CDouble = CDouble
   | size t1 == size t2 && signed t1 = t2
   | size t1 == size t2 = t1
   | size t1 > size t2 = t1
@@ -97,23 +139,27 @@ instance Sizeable CType where
   size CLong = 8
   size CUInt = 4
   size CULong = 8
+  size CDouble = 8
   size (CFunc _ _) = error "Function type in size"
 
 instance Sizeable AsmType where
   size :: AsmType -> Integer
   size Longword = 4
   size Quadword = 8
+  size AsmDouble = 8
 
 ctypeToAsmType :: CType -> AsmType
 ctypeToAsmType CInt = Longword
 ctypeToAsmType CLong = Quadword
 ctypeToAsmType CUInt = Longword
 ctypeToAsmType CULong = Quadword
+ctypeToAsmType CDouble = AsmDouble
 ctypeToAsmType (CFunc {}) = error "Function type not supported"
 
 alignmentSize :: AsmType -> Integer
 alignmentSize Longword = 4
 alignmentSize Quadword = 8
+alignmentSize AsmDouble = 8
 
 isFunction :: Maybe CType -> Bool
 isFunction (Just (CFunc _ _)) = True
@@ -129,8 +175,9 @@ stToAsmST = M.map stToAsmSTEntry
   where
     stToAsmSTEntry :: SymbolTableEntry -> AsmSymbolTableEntry
     stToAsmSTEntry (CFunc {}, FuncAttr defined _) = Fun defined
-    stToAsmSTEntry (ty, LocalAttr) = Obj (ctypeToAsmType ty) False (signed ty)
-    stToAsmSTEntry (ty, StaticAttr {}) = Obj (ctypeToAsmType ty) True (signed ty)
+    stToAsmSTEntry (ty, LocalAttr) = Obj (ctypeToAsmType ty) False (signed ty) False
+    stToAsmSTEntry (ty, StaticAttr {}) = Obj (ctypeToAsmType ty) True (signed ty) False
+    stToAsmSTEntry (ty, StaticConst _) = Obj (ctypeToAsmType ty) True (signed ty) True
     stToAsmSTEntry _ = error "Invalid symbol table entry"
 
 isAsmBitshiftOp :: AsmBinaryOp -> Bool

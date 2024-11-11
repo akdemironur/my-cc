@@ -7,10 +7,10 @@ import qualified Data.Map as M
 
 newtype AsmProgram = AsmProgram [AsmTopLevel] deriving (Show, Eq)
 
-data AsmType = Longword | Quadword deriving (Show, Eq)
+data AsmType = Longword | Quadword | AsmDouble deriving (Show, Eq)
 
 data AsmSymbolTableEntry
-  = Obj AsmType Bool Bool -- isStatic isSigned
+  = Obj AsmType Bool Bool Bool -- isStatic isSigned isConst
   | Fun Bool -- isDefined
   deriving (Show, Eq)
 
@@ -19,6 +19,7 @@ type AsmSymbolTable = M.Map Identifier AsmSymbolTableEntry
 data AsmTopLevel
   = AsmFunction String Bool [AsmInstruction] -- identifier isDefined instructions
   | AsmStaticVariable String Bool Integer StaticInit -- identifier isStatic alignment initial
+  | AsmStaticConstant String Integer StaticInit -- identifier alignment initial
   deriving (Show, Eq)
 
 data AsmCondCode
@@ -32,6 +33,7 @@ data AsmCondCode
   | AE
   | B
   | BE
+  | P
   deriving (Show, Eq)
 
 type Offset = Int
@@ -53,17 +55,21 @@ data AsmInstruction
   | AsmPush AsmOperand
   | AsmCall String
   | AsmRet
+  | AsmCvttsd2si AsmType AsmOperand AsmOperand -- dst_type src dst
+  | AsmCvtsi2sd AsmType AsmOperand AsmOperand -- src_type src dst
   deriving (Show, Eq)
 
 data AsmUnaryOp
   = AsmNeg
   | AsmNot
+  | AsmUShr
   deriving (Show, Eq)
 
 data AsmBinaryOp
   = AsmAdd
   | AsmSub
   | AsmMult
+  | AsmDivDouble
   | AsmXor
   | AsmAnd
   | AsmOr
@@ -91,4 +97,20 @@ data AsmReg
   | R10
   | R11
   | SP
+  | XMM0
+  | XMM1
+  | XMM2
+  | XMM3
+  | XMM4
+  | XMM5
+  | XMM6
+  | XMM7
+  | XMM8
+  | XMM9
+  | XMM10
+  | XMM11
+  | XMM12
+  | XMM13
+  | XMM14
+  | XMM15
   deriving (Show, Eq)
